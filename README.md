@@ -26,7 +26,7 @@ Each block type is defined by four things:
 
 ## Context specifications
 
-[`context/`](context/) holds one Markdown file per activity type: what it is, its fields, its digital behaviour, and its **analog translation strategy** (`direct`, `transform`, or `teacher-audio`). These are Obsidian-compatible and double as the authoring spec. See [`context/README.md`](context/README.md) for the full catalogue and the digital→analog principle.
+[`context/`](context/) holds one Markdown file per activity type: what it is, its fields, its digital behaviour, and its **analog translation strategy** (`direct` or `transform`). These are Obsidian-compatible and double as the authoring spec. See [`context/README.md`](context/README.md) for the full catalogue and the digital→analog principle.
 
 ## The analog principle
 
@@ -36,7 +36,6 @@ No block is screen-only. Every type degrades to an offline format via one of thr
 |----------|---------|----------|
 | `direct` | Works on paper as-is | quiz, gap-fill, crossword, word-search |
 | `transform` | Digital mechanic → analog equivalent | flashdeck → vocabulary table, memory-game → cut-out cards, scenario → numbered choose-your-path boxes |
-| `teacher-audio` | Audio → printed teacher read-aloud script | dictation, listen-mcq |
 
 ## Usage
 

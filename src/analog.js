@@ -174,18 +174,7 @@ const E = {
     };
   },
 
-  'dictation': (a, n) => ({
-    body: `**${n}.** Dictation — listen to your teacher and write each sentence.\n\n` +
-      a.items.map((_, i) => `${i + 1}. ${line(60)}`).join('\n\n'),
-    key: `**Teacher script (dictation ${n})** — read each sentence three times: natural speed, slow, natural speed.\n\n` +
-      a.items.map((it, i) => `> ${i + 1}. ${it.text}`).join('\n'),
-  }),
-  'listen-mcq': (a, n) => ({
-    body: `**${n}.** Listening — your teacher will read a text twice. Then answer:\n\n` +
-      a.questions.map((q, i) => mcqBody(q, `${n}.${i + 1}`)).join('\n\n'),
-    key: `**Teacher script (listening ${n})** — read the text twice at natural speed.\n\n> ${a.transcript.replace(/\n/g, '\n> ')}\n\nAnswers: ` +
-      a.questions.map((q, i) => `${n}.${i + 1}-${LETTERS[q.answer].toUpperCase()}`).join(', '),
-  }),
+  /* dictation & listen-mcq: out of scope until browser TTS lands (core#2). */
 
   'quiz': (a, n) => ({
     body: (a.passMark ? `*Pass mark: ${a.passMark} of ${a.questions.length}*\n\n` : '') +

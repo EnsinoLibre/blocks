@@ -25,7 +25,7 @@ A block type is only complete when it appears in **all** of these, and the test 
 1. `contracts/activity-types.ts` — the data shape
 2. `src/validator.js` — a validator returning readable problems
 3. `src/renderer.js` — an interactive renderer with tiered feedback
-4. `src/analog.js` — an analog (print) emitter; pick a strategy (`direct` / `transform` / `teacher-audio`)
+4. `src/analog.js` — an analog (print) emitter; pick a strategy (`direct` / `transform`)
 5. `src/prompt-builder.js` — the `CONTRACTS` entry and `ACTIVITY_TYPES` listing
 6. `schema/worksheet.schema.json` — the per-type schema branch
 7. `context/<type>.md` — the spec, with `analog-strategy` frontmatter and a live example

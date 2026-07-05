@@ -12,14 +12,12 @@ No block is screen-only. Each type degrades to an offline format via one strateg
 |----------|---------|----------|
 | `direct` | Works on paper as-is | quiz, gap-fill, true-false, crossword, word-search, reading-comp |
 | `transform` | Digital mechanic → analog equivalent | flashcards → vocabulary table, memory game → cut-out cards, scenario → numbered choose-your-path boxes, slides → sectioned handout |
-| `teacher-audio` | Audio → printed teacher read-aloud script | dictation, listen-mcq |
 
 ## Catalogue
 
 - **Core** — mcq, true-false, gap-fill, matching, ordering, open-response
 - **Input** — content, course-presentation, timeline, dialogue, grammar-forms, tense-shift, word-transform, translation-compare
 - **Vocabulary** — flashdeck, memory-game, word-search
-- **Listening** — dictation, listen-mcq
 - **Practice sets** — quiz, single-choice-set, question-set, mark-words
 - **Contextualised** — reading-comp, translation, scenario, lesson, crossword, image-hotspot
 - **Checks & forms** — summary, survey, poll

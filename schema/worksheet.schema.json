@@ -84,7 +84,7 @@
           "enum": ["mcq", "true-false", "gap-fill", "matching", "ordering", "open-response",
             "content", "course-presentation", "timeline", "dialogue", "grammar-forms", "tense-shift",
             "word-transform", "translation-compare", "flashdeck", "memory-game", "word-search",
-            "dictation", "listen-mcq", "quiz", "single-choice-set", "question-set", "mark-words",
+            "quiz", "single-choice-set", "question-set", "mark-words",
             "reading-comp", "translation", "scenario", "lesson", "crossword", "image-hotspot",
             "summary", "survey", "poll"]
         },
@@ -218,20 +218,6 @@
           "properties": {
             "words": { "type": "array", "minItems": 4, "maxItems": 14, "items": { "type": "string", "pattern": "^\\p{L}+$" } },
             "gridSize": { "type": "integer", "minimum": 6, "maximum": 16 }
-          } } },
-        { "if": { "properties": { "type": { "const": "dictation" } } }, "then": {
-          "required": ["items"],
-          "properties": {
-            "items": { "type": "array", "minItems": 1, "maxItems": 8, "items": {
-              "type": "object", "required": ["text"],
-              "properties": { "text": { "$ref": "#/$defs/nonEmpty" }, "hint": { "$ref": "#/$defs/hint" } } } }
-          } } },
-        { "if": { "properties": { "type": { "const": "listen-mcq" } } }, "then": {
-          "required": ["transcript", "questions"],
-          "properties": {
-            "transcript": { "$ref": "#/$defs/nonEmpty" },
-            "showTranscriptAfter": { "type": "boolean" },
-            "questions": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/mcqCore" } }
           } } },
         { "if": { "properties": { "type": { "const": "quiz" } } }, "then": {
           "required": ["questions"],
