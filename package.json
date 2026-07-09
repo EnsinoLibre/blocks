@@ -1,6 +1,6 @@
 {
   "name": "@ensinolibre/blocks",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "EnsinoLibre's reusable teaching-block library: contracts, digital renderers, analog (print) emitters and AI-prompt contracts for every worksheet activity type.",
   "type": "module",
   "license": "MIT",
@@ -8,6 +8,7 @@
     "./validator": "./src/validator.js",
     "./renderer": "./src/renderer.js",
     "./analog": "./src/analog.js",
+    "./exporters": "./src/exporters.js",
     "./prompt-builder": "./src/prompt-builder.js",
     "./schema": "./schema/worksheet.schema.json"
   },

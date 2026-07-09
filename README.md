@@ -42,9 +42,11 @@ No block is screen-only. Every type degrades to an offline format via one of thr
 ```js
 import { validateActivity, KNOWN_TYPES } from '@ensinolibre/blocks/validator';
 import { emitAnalog } from '@ensinolibre/blocks/analog';
+import { renderWorksheet } from '@ensinolibre/blocks/renderer';
+import { renderExportBar } from '@ensinolibre/blocks/exporters';
 ```
 
-`validator.js`, `analog.js` and `prompt-builder.js` are pure (no DOM) and run under Node; `renderer.js` and `anim.js` are browser modules.
+`validator.js`, `analog.js` and `prompt-builder.js` are pure (no DOM) and run under Node; `renderer.js`, `anim.js` and `exporters.js` are browser modules. `renderExportBar(ws, container, { markdownToHtml })` mounts a teacher export toolbar (Print/PDF, Markdown, Moodle XML question import, JSON) next to a rendered worksheet.
 
 ```
 npm install
