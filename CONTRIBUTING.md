@@ -11,7 +11,7 @@ blocks/
 ├── src/
 │   ├── validator.js              ← runtime guards → plain-language problems (pure)
 │   ├── renderer.js               ← interactive DOM renderers
-│   ├── anim.js                   ← Anime.js v4 layer for visual-grammar blocks
+│   ├── anim.js                   ← Web Animations API layer for visual-grammar blocks
 │   ├── analog.js                 ← Markdown/print emitters (pure)
 │   └── prompt-builder.js         ← AI-prompt contracts (pure)
 ├── schema/worksheet.schema.json  ← the worksheet format

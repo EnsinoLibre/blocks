@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>anim.js WAAPI smoke test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  .oc-word-tile { display: inline-block; padding: 4px 10px; margin: 2px; border: 1px solid #888; border-radius: 6px; background: #f4f0e6; }
+  .oc-word-tile--emph { background: #ffd98a; font-weight: 700; }
+  .oc-morph { display: inline-block; padding: 4px 8px; margin: 1px; border-radius: 4px; background: #e8e8e8; }
+  .oc-morph--prefix { background: #cfe3ff; }
+  .oc-morph--suffix { background: #ffd6d6; }
+  .oc-morph--root { background: #d8f0d0; }
+  .oc-btn { padding: 6px 12px; margin: 4px; cursor: pointer; }
+  .oc-tab--active { outline: 2px solid #2a6; }
+  .oc-tc { position: relative; padding: 30px 0; }
+  .oc-tc-svg { position: absolute; inset: 0; pointer-events: none; }
+  .oc-tc-path { fill: none; stroke: #2a6; stroke-width: 2; }
+  .oc-tc-path--note { stroke: #c60; }
+  .oc-tc-path--active { stroke-width: 3.5; }
+  .oc-tc-row { display: flex; gap: 6px; margin: 14px 0; }
+  .oc-tc-token { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; background: #fff; }
+  .oc-tc-token--active { background: #ffd98a; }
+  .oc-tc-token--hit { background: #d8f0d0; }
+  .oc-activity { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  #status { font-weight: bold; color: #2a6; }
+</style>
+</head>
+<body>
+<h1>WAAPI anim smoke test</h1>
+<p id="status">loading…</p>
+<div id="mount"></div>
+<script type="module">
+  import { renderWorksheet } from '../src/renderer.js';
+  import { validateWorksheet } from '../src/validator.js';
+  import { renderExportBar, toMoodleXML } from '../src/exporters.js';
+
+  const ws = {
+    title: 'Anim smoke test', subject: 'English', audience: 'test', language: 'en-GB',
+    sections: [{
+      title: 'Visual grammar', activities: [
+        { type: 'grammar-forms', grammar: 'Present simple — to like', forms: [
+          { label: 'Positive', sentence: 'She **likes** coffee.', gloss: 'Ela gosta de café.' },
+          { label: 'Negative', sentence: 'She **does not like** coffee.', gloss: 'Ela não gosta de café.' },
+          { label: 'Question', sentence: '**Does** she **like** coffee?', gloss: 'Ela gosta de café?' },
+        ] },
+        { type: 'word-transform', instruction: 'Watch the word build.', baseWord: 'happy', steps: [
+          { derived: 'unhappy', pos: 'adjective', morphemes: [{ text: 'un', role: 'prefix' }, { text: 'happy', role: 'root' }] },
+          { derived: 'happiness', pos: 'noun', morphemes: [{ text: 'happi', role: 'root' }, { text: 'ness', role: 'suffix' }] },
+        ] },
+        { type: 'translation-compare', instruction: 'Tap a word above.', pairs: [
+          { headline: 'Tenho fome → I am hungry', sourceTokens: ['Tenho', 'fome'], targetTokens: ['I', 'am', 'hungry'],
+            links: [{ s: 0, t: 1, note: "PT uses 'ter'; EN uses 'to be'." }, { s: 1, t: 2 }] },
+        ] },
+        { type: 'tense-shift', verb: 'to work', tenses: [
+          { label: 'Past', sentence: 'Maria **worked** late yesterday.' },
+          { label: 'Present', sentence: 'Maria **works** late every Friday.' },
+        ] },
+      ],
+    }],
+  };
+
+  const problems = validateWorksheet(ws);
+  const status = document.getElementById('status');
+  if (problems.length) {
+    status.textContent = 'INVALID: ' + problems.join(' | ');
+    status.style.color = '#c00';
+  } else {
+    const mount = document.getElementById('mount');
+    renderWorksheet(ws, mount);
+    renderExportBar(ws, mount);
+    status.textContent = 'rendered OK';
+    window.__testHooks = { toMoodleXML: () => toMoodleXML(ws) };
+  }
+</script>
+</body>
+</html>
