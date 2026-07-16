@@ -13,7 +13,7 @@
  */
 
 import { parseGaps } from './validator.js';
-import { warmAnime, enterTiles, exitTiles, popTiles, pulseWave, flyInMorphemes, drawPaths } from './anim.js';
+import { warmAnime, enterTiles, exitTiles, popTiles, pulseWave, flyInMorphemes, drawPaths, flipCard, flipSwap, shakeTiles, flashCorrect } from './anim.js';
 
 let uid = 0;
 const nextId = (p) => `oc-${p}-${++uid}`;
@@ -80,16 +80,19 @@ function makeFeedback(card, activity, revealText) {
   card.appendChild(box);
   let attempts = 0;
   return {
+    get attempts() { return attempts; }, // wrong-tries so far, for first-attempt scoring (#63)
     correct(extra) {
       card.dataset.state = 'correct';
       box.className = 'oc-feedback oc-feedback--correct';
       const explain = extra ?? activity.explanation;
       box.textContent = explain ? `Correct! ${explain}` : 'Correct!';
+      flashCorrect(card); // shared across all 13 check-based types (#14)
     },
     wrong() {
       attempts += 1;
       card.dataset.state = 'wrong';
       box.className = 'oc-feedback oc-feedback--wrong';
+      shakeTiles([card]); // shared "not quite" shake (#14)
       if (attempts >= 3) {
         box.textContent = `The answer is: ${revealText()}` + (activity.explanation ? ` — ${activity.explanation}` : '');
         card.dataset.state = 'revealed';
@@ -143,7 +146,7 @@ function qMcq(q, { onResolve } = {}) {
     if (!picked) return fb.neutral('Choose an option first.');
     const ok = Number(picked.value) === q.answer;
     ok ? fb.correct() : fb.wrong();
-    if (!done && (ok || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(ok); }
+    if (!done && (ok || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(ok, { attempts: fb.attempts }); }
   }));
   return block;
 }
@@ -171,7 +174,7 @@ function qTf(q, { onResolve } = {}) {
     if (!picked) return fb.neutral('Choose True or False first.');
     const ok = (picked.value === 'true') === q.answer;
     ok ? fb.correct() : fb.wrong();
-    if (!done && (ok || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(ok); }
+    if (!done && (ok || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(ok, { attempts: fb.attempts }); }
   }));
   return block;
 }
@@ -208,7 +211,7 @@ function qGap(q, { onResolve } = {}) {
     }
     if (!allFilled) return fb.neutral('Fill in every gap first.');
     allRight ? fb.correct() : fb.wrong();
-    if (!done && (allRight || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(allRight); }
+    if (!done && (allRight || block.dataset.state === 'revealed')) { done = true; onResolve && onResolve(allRight, { attempts: fb.attempts }); }
   }));
   return block;
 }
@@ -258,20 +261,43 @@ function qMatch(q, { onResolve } = {}) {
 
 const Q_PRIMITIVES = { 'mcq': qMcq, 'true-false': qTf, 'gap-fill': qGap, 'matching': qMatch };
 
-/** Score tracker banner for set types with a passMark. */
+/** Stagger (ms) for entering `count` tiles, clamped so a long set's total
+ *  entrance never blows past ~1s (a 12-question quiz shouldn't take 4s to
+ *  appear) — scales the per-tile delay down as count grows (#66). */
+function clampedStagger(count, base = 70, capTotal = 900) {
+  if (count <= 1) return base;
+  return Math.max(15, Math.min(base, Math.floor(capTotal / count)));
+}
+
+/**
+ * Score tracker banner for set types with a passMark. Tracks both eventual
+ * correctness (hint-cycled to the right answer counts) and first-attempt
+ * correctness (right first try, attempts === 0) so a learner can't hint-cycle
+ * every MCQ and still bank a "passed" — pass/fail is decided on the first-try
+ * tally, and both numbers are shown once they diverge (#63). The tiered
+ * hint→hint→reveal learning flow itself is untouched; this only changes what
+ * gets counted for the passMark banner.
+ */
 function scoreTracker(card, total, passMark) {
   const bar = el('p', 'oc-word-count');
   bar.textContent = `0 / ${total} correct` + (passMark ? ` · pass mark ${passMark}` : '');
   card.appendChild(bar);
   let correct = 0;
+  let firstTry = 0;
   let resolved = 0;
-  return (ok) => {
+  return (ok, meta) => {
     resolved += 1;
-    if (ok) correct += 1;
-    bar.textContent = `${correct} / ${total} correct` + (passMark ? ` · pass mark ${passMark}` : '');
+    if (ok) {
+      correct += 1;
+      if (!meta || meta.attempts === 0) firstTry += 1;
+    }
+    bar.textContent = firstTry === correct
+      ? `${correct} / ${total} correct` + (passMark ? ` · pass mark ${passMark}` : '')
+      : `${firstTry} / ${total} first try · ${correct} / ${total} after retries` + (passMark ? ` · pass mark ${passMark}` : '');
     if (resolved === total && passMark) {
-      bar.classList.add(correct >= passMark ? 'oc-word-count--met' : 'oc-feedback--wrong');
-      bar.textContent += correct >= passMark ? ' — passed! 🎉' : ' — not passed, review and retry.';
+      const passed = firstTry >= passMark;
+      bar.classList.add(passed ? 'oc-word-count--met' : 'oc-feedback--wrong');
+      bar.textContent += passed ? ' — passed! 🎉' : ' — not passed, review and retry.';
     }
   };
 }
@@ -292,6 +318,7 @@ R['ordering'] = (a, index) => {
   let order = shuffled(a.items);
   if (order.join(' ') === a.items.join(' ')) order = [order[1], order[0], ...order.slice(2)];
   const list = el('ol', 'oc-order');
+  let busy = false;
   function draw() {
     list.textContent = '';
     order.forEach((item, i) => {
@@ -300,19 +327,42 @@ R['ordering'] = (a, index) => {
       const controls = el('span', 'oc-order-controls');
       const up = el('button', 'oc-btn oc-btn--mini', '↑');
       up.type = 'button';
-      up.disabled = i === 0;
+      up.disabled = busy || i === 0;
       up.setAttribute('aria-label', `move "${item}" up`);
-      up.addEventListener('click', () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; draw(); });
+      up.addEventListener('click', () => swap(i - 1, i));
       const down = el('button', 'oc-btn oc-btn--mini', '↓');
       down.type = 'button';
-      down.disabled = i === order.length - 1;
+      down.disabled = busy || i === order.length - 1;
       down.setAttribute('aria-label', `move "${item}" down`);
-      down.addEventListener('click', () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; draw(); });
+      down.addEventListener('click', () => swap(i, i + 1));
       controls.appendChild(up);
       controls.appendChild(down);
       li.appendChild(controls);
       list.appendChild(li);
     });
+  }
+  // FLIP the two rows that just swapped positions (#64): measure their
+  // current rects, mutate the order + redraw, then animate from the old
+  // position back to identity. Buttons are disabled for the swap's duration
+  // so state and DOM can't race further clicks; reduced motion / no
+  // `animate` resolves instantly via anim.js's canAnimate no-op.
+  async function swap(i, j) {
+    if (busy || i < 0 || j >= order.length) return;
+    const lis = [...list.children];
+    const liA = lis[i];
+    const liB = lis[j];
+    const rectA = liA.getBoundingClientRect();
+    const rectB = liB.getBoundingClientRect();
+    [order[i], order[j]] = [order[j], order[i]];
+    busy = true;
+    draw();
+    const newLis = [...list.children];
+    try {
+      await flipSwap(newLis[i], rectB, newLis[j], rectA);
+    } finally {
+      busy = false;
+      draw();
+    }
   }
   draw();
   card.appendChild(list);
@@ -331,10 +381,16 @@ R['open-response'] = (a, index) => {
   card.appendChild(ta);
   const counter = el('p', 'oc-word-count', a.minWords ? `0 words (aim for at least ${a.minWords})` : '0 words');
   card.appendChild(counter);
+  let wasMet = false;
   ta.addEventListener('input', () => {
     const words = ta.value.trim() ? ta.value.trim().split(/\s+/).length : 0;
     counter.textContent = a.minWords ? `${words} words (aim for at least ${a.minWords})` : `${words} words`;
-    if (a.minWords) counter.classList.toggle('oc-word-count--met', words >= a.minWords);
+    if (a.minWords) {
+      const met = words >= a.minWords;
+      counter.classList.toggle('oc-word-count--met', met);
+      if (met && !wasMet) popTiles([counter]); // celebrate crossing the target (#16)
+      wasMet = met;
+    }
   });
   if (a.sampleAnswer) {
     const details = el('details', 'oc-sample');
@@ -349,39 +405,54 @@ R['open-response'] = (a, index) => {
 
 R['content'] = (a, index) => {
   const card = activityCard(a, index);
+  const items = [];
   a.sections.forEach((s) => {
-    card.appendChild(el('h4', 'oc-content-heading', s.heading));
-    s.body.split(/\n{2,}/).forEach((para) => card.appendChild(richText(el('p', 'oc-content-body'), para)));
+    const h = el('h4', 'oc-content-heading', s.heading);
+    card.appendChild(h); items.push(h);
+    s.body.split(/\n{2,}/).forEach((para) => { const p = richText(el('p', 'oc-content-body'), para); card.appendChild(p); items.push(p); });
   });
+  enterTiles(items); // light staggered entrance (#15)
   return card;
 };
 
 R['course-presentation'] = (a, index) => {
   const card = activityCard(a, index);
   let current = 0;
+  let busy = false;
   const stage = el('div', 'oc-slide');
+  stage.setAttribute('aria-live', 'polite'); // slide changes are announced (#68)
   const dots = el('p', 'oc-word-count');
-  function draw() {
-    stage.textContent = '';
-    const s = a.slides[current];
-    if (s.title) stage.appendChild(el('h4', 'oc-content-heading', s.title));
-    if (s.body) stage.appendChild(richText(el('p', 'oc-content-body'), s.body));
-    if (s.activity) {
-      const boxed = el('div', 'oc-qblock oc-slide-check');
-      boxed.appendChild(el('p', 'oc-live-example-label', 'Quick check'));
-      boxed.appendChild(s.activity.subtype === 'mcq' ? qMcq(s.activity) : qTf(s.activity));
-      stage.appendChild(boxed);
+  async function draw(transition) {
+    if (busy) return; // ignore re-entrant calls while an exit/enter is in flight (#54)
+    busy = true;
+    prev.disabled = true;
+    next.disabled = true;
+    try {
+      if (transition) { const leaving = [...stage.children]; if (leaving.length) await exitTiles(leaving); } // wipe the slide (#13)
+      stage.textContent = '';
+      const s = a.slides[current];
+      if (s.title) stage.appendChild(el('h4', 'oc-content-heading', s.title));
+      if (s.body) stage.appendChild(richText(el('p', 'oc-content-body'), s.body));
+      if (s.activity) {
+        const boxed = el('div', 'oc-qblock oc-slide-check');
+        boxed.appendChild(el('p', 'oc-live-example-label', 'Quick check'));
+        boxed.appendChild(s.activity.subtype === 'mcq' ? qMcq(s.activity) : qTf(s.activity));
+        stage.appendChild(boxed);
+      }
+      dots.textContent = `Slide ${current + 1} of ${a.slides.length}`;
+      if (transition) await enterTiles([...stage.children]); // paint the next slide in (#13)
+    } finally {
+      busy = false;
+      prev.disabled = current === 0;
+      next.disabled = current === a.slides.length - 1;
     }
-    dots.textContent = `Slide ${current + 1} of ${a.slides.length}`;
-    prev.disabled = current === 0;
-    next.disabled = current === a.slides.length - 1;
   }
   const prev = el('button', 'oc-btn oc-btn--check', '← Previous');
   prev.type = 'button';
-  prev.addEventListener('click', () => { current -= 1; draw(); });
+  prev.addEventListener('click', () => { if (busy) return; current -= 1; draw(true); });
   const next = el('button', 'oc-btn oc-btn--check', 'Next →');
   next.type = 'button';
-  next.addEventListener('click', () => { current += 1; draw(); });
+  next.addEventListener('click', () => { if (busy) return; current += 1; draw(true); });
   card.appendChild(stage);
   const row = el('div', 'oc-actions-row');
   row.appendChild(prev);
@@ -395,6 +466,7 @@ R['course-presentation'] = (a, index) => {
 R['timeline'] = (a, index) => {
   const card = activityCard(a, index);
   const list = el('ol', 'oc-timeline');
+  const items = [];
   a.items.forEach((it) => {
     const li = el('li', 'oc-timeline-item');
     li.appendChild(el('span', 'oc-timeline-date', it.date));
@@ -402,9 +474,10 @@ R['timeline'] = (a, index) => {
     body.appendChild(el('strong', null, it.headline));
     if (it.text) body.appendChild(el('p', 'oc-content-body', it.text));
     li.appendChild(body);
-    list.appendChild(li);
+    list.appendChild(li); items.push(li);
   });
   card.appendChild(list);
+  enterTiles(items); // staggered entrance down the timeline (#15)
   return card;
 };
 
@@ -412,14 +485,16 @@ R['dialogue'] = (a, index) => {
   const card = activityCard(a, index);
   if (a.context) card.appendChild(el('p', 'oc-section-instructions', `📍 ${a.context}`));
   const chat = el('div', 'oc-chat');
+  const bubbles = [];
   a.lines.forEach((l) => {
     const bubble = el('div', `oc-bubble oc-bubble--${l.speaker}`);
     bubble.appendChild(el('span', 'oc-bubble-name', l.speaker === 'a' ? a.speakerA : a.speakerB));
     bubble.appendChild(el('span', null, l.text));
     if (l.gloss) bubble.appendChild(el('span', 'oc-bubble-gloss', l.gloss));
-    chat.appendChild(bubble);
+    chat.appendChild(bubble); bubbles.push(bubble);
   });
   card.appendChild(chat);
+  enterTiles(bubbles); // bubbles arrive one after another (#15)
   if (AUDIO_ENABLED) {
     const script = a.lines.map((l) => l.text).join('\n');
     card.appendChild(ttsButton(script, { label: '🔊 Play dialogue' }));
@@ -448,8 +523,15 @@ function sentenceTiles(stage, sentence) {
 
 function formsTabs(card, entries, headline) {
   if (headline) card.appendChild(el('h4', 'oc-content-heading', headline));
+  // Tab semantics + arrow-key navigation between tabs (#68).
   const tabs = el('div', 'oc-checks');
+  tabs.setAttribute('role', 'tablist');
+  if (headline) tabs.setAttribute('aria-label', headline);
+  const stageId = nextId('formsstage');
   const stage = el('div', 'oc-forms-stage');
+  stage.id = stageId;
+  stage.setAttribute('role', 'tabpanel');
+  stage.setAttribute('aria-live', 'polite');
   const glossEl = el('p', 'oc-bubble-gloss');
   const buttons = [];
   let currentTiles = [];
@@ -465,7 +547,12 @@ function formsTabs(card, entries, headline) {
   async function show(i, animated) {
     if (busy || i === currentIndex) return;
     busy = true;
-    buttons.forEach((b, j) => b.classList.toggle('oc-tab--active', i === j));
+    buttons.forEach((b, j) => {
+      const active = i === j;
+      b.classList.toggle('oc-tab--active', active);
+      b.setAttribute('aria-selected', String(active));
+      b.tabIndex = active ? 0 : -1;
+    });
     if (animated && currentTiles.length) await exitTiles(currentTiles);
     currentIndex = i;
     const tiles = paint(i);
@@ -478,7 +565,24 @@ function formsTabs(card, entries, headline) {
   entries.forEach((f, i) => {
     const b = el('button', 'oc-btn oc-btn--check', f.label);
     b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', 'false');
+    b.setAttribute('aria-controls', stageId);
+    b.tabIndex = -1;
     b.addEventListener('click', () => show(i, true));
+    b.addEventListener('keydown', (ev) => {
+      // Roving-tabindex arrow-key navigation between tabs (standard tablist pattern).
+      let target = null;
+      if (ev.key === 'ArrowRight') target = (i + 1) % buttons.length;
+      else if (ev.key === 'ArrowLeft') target = (i - 1 + buttons.length) % buttons.length;
+      else if (ev.key === 'Home') target = 0;
+      else if (ev.key === 'End') target = buttons.length - 1;
+      if (target != null) {
+        ev.preventDefault();
+        buttons[target].focus();
+        show(target, true);
+      }
+    });
     buttons.push(b);
     tabs.appendChild(b);
   });
@@ -504,6 +608,8 @@ function formsTabs(card, entries, headline) {
 
   // Initial paint + entrance animation.
   buttons[0].classList.add('oc-tab--active');
+  buttons[0].setAttribute('aria-selected', 'true');
+  buttons[0].tabIndex = 0;
   currentIndex = 0;
   enterTiles(paint(0)).then(() => popTiles(currentTiles.filter((t) => t.dataset.emph === '1')));
   return { show };
@@ -556,6 +662,9 @@ R['word-transform'] = (a, index) => {
 
 R['translation-compare'] = (a, index) => {
   const card = activityCard(a, index);
+  // Emitted once per activity, not once per pair — with several pairs the
+  // same instruction used to print once per pair (#58).
+  card.appendChild(el('p', 'oc-word-count', 'Tap a word in the top row — its match and the link light up.'));
   a.pairs.forEach((p) => {
     if (p.headline) card.appendChild(el('h4', 'oc-content-heading', p.headline));
     const wrap = el('div', 'oc-tc');
@@ -590,7 +699,6 @@ R['translation-compare'] = (a, index) => {
     wrap.appendChild(srcRow);
     wrap.appendChild(tgtRow);
     card.appendChild(wrap);
-    card.appendChild(el('p', 'oc-word-count', 'Tap a word in the top row — its match and the link light up.'));
     p.links.filter((l) => l.note).forEach((l) => {
       card.appendChild(el('p', 'oc-bubble-gloss', `⚠ ${p.sourceTokens[l.s]} → ${p.targetTokens[l.t]}: ${l.note}`));
     });
@@ -598,6 +706,9 @@ R['translation-compare'] = (a, index) => {
     // Draw the connector curves once the tokens have a measured position.
     let layoutTries = 0;
     function layoutPaths() {
+      // Stop once the node is detached (e.g. React unmounted the worksheet) —
+      // no wasted retries and, with the ResizeObserver below, no leaked work.
+      if (!wrap.isConnected) return;
       const box = wrap.getBoundingClientRect();
       if (!box.width) {
         // Retry with setTimeout too, so a throttled rAF can't stop us measuring.
@@ -629,7 +740,15 @@ R['translation-compare'] = (a, index) => {
     }
     requestAnimationFrame(layoutPaths);
     setTimeout(layoutPaths, 80);
-    window.addEventListener('resize', () => { layoutTries = 0; requestAnimationFrame(layoutPaths); });
+    // Re-layout on size changes via a ResizeObserver on the wrap itself, NOT a
+    // window 'resize' listener: the observer stops firing (and is GC'd) once the
+    // node is detached, so re-mounting from React can't leak a growing pile of
+    // stale global listeners (#7). It also catches container resizes a window
+    // listener would miss.
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => { layoutTries = 0; requestAnimationFrame(layoutPaths); });
+      ro.observe(wrap);
+    }
   });
   return card;
 };
@@ -640,9 +759,18 @@ R['flashdeck'] = (a, index) => {
   const card = activityCard(a, index);
   let current = 0;
   let showBack = false;
+  let busy = false;
   const face = el('button', 'oc-flashcard');
   face.type = 'button';
   const counter = el('p', 'oc-word-count');
+  async function doFlip(mutate) {
+    // Serialise flips: a click landing mid-animation used to desync showBack
+    // from the visible face (#67) — busy guards the whole flip like formsTabs.
+    if (busy) return;
+    busy = true;
+    mutate();
+    try { await flipCard(face, draw); } finally { busy = false; }
+  }
   function draw() {
     const c = a.cards[current];
     face.textContent = '';
@@ -657,15 +785,16 @@ R['flashdeck'] = (a, index) => {
     }
     counter.textContent = `Card ${current + 1} of ${a.cards.length}`;
   }
-  face.addEventListener('click', () => { showBack = !showBack; draw(); });
+  // Flip the card face-over on tap; swap content at the edge-on midpoint (#11).
+  face.addEventListener('click', () => doFlip(() => { showBack = !showBack; }));
   card.appendChild(face);
   const row = el('div', 'oc-actions-row');
   const prev = el('button', 'oc-btn oc-btn--check', '←');
   prev.type = 'button';
-  prev.addEventListener('click', () => { current = (current - 1 + a.cards.length) % a.cards.length; showBack = false; draw(); });
+  prev.addEventListener('click', () => doFlip(() => { current = (current - 1 + a.cards.length) % a.cards.length; showBack = false; }));
   const next = el('button', 'oc-btn oc-btn--check', '→');
   next.type = 'button';
-  next.addEventListener('click', () => { current = (current + 1) % a.cards.length; showBack = false; draw(); });
+  next.addEventListener('click', () => doFlip(() => { current = (current + 1) % a.cards.length; showBack = false; }));
   row.appendChild(prev);
   row.appendChild(counter);
   if (AUDIO_ENABLED) {
@@ -691,18 +820,28 @@ R['memory-game'] = (a, index) => {
   ]));
   const grid = el('div', 'oc-memory');
   const moves = el('p', 'oc-word-count', 'Moves: 0');
+  moves.setAttribute('aria-live', 'polite');
   let open = [];
   let moveCount = 0;
   let matched = 0;
-  faces.forEach((f) => {
+  // Every cell was labelled "?" — indistinguishable to a screen reader (#68).
+  // Give each a positional label, kept in sync with its visible state.
+  faces.forEach((f, i) => {
     const cell = el('button', 'oc-memory-card', '?');
     cell.type = 'button';
+    const position = i + 1;
+    const label = (state) => cell.setAttribute('aria-label', `card ${position}, ${state}`);
+    label('face down');
     cell.addEventListener('click', () => {
       if (cell.classList.contains('oc-memory-card--done') || open.includes(cell) || open.length === 2) return;
-      cell.textContent = f.text;
-      cell.classList.add('oc-memory-card--open');
-      open.push(cell);
       cell.dataset.key = f.key;
+      open.push(cell);
+      // Flip the card face-up (#12).
+      flipCard(cell, () => {
+        cell.textContent = f.text;
+        cell.classList.add('oc-memory-card--open');
+        label(`showing ${f.text}`);
+      });
       if (open.length === 2) {
         moveCount += 1;
         moves.textContent = `Moves: ${moveCount}`;
@@ -710,14 +849,23 @@ R['memory-game'] = (a, index) => {
         if (x.dataset.key === y.dataset.key) {
           x.classList.add('oc-memory-card--done');
           y.classList.add('oc-memory-card--done');
+          x.setAttribute('aria-label', x.getAttribute('aria-label').replace('showing', 'matched:'));
+          y.setAttribute('aria-label', y.getAttribute('aria-label').replace('showing', 'matched:'));
+          setTimeout(() => popTiles([x, y]), 320); // pop once the reveal flip settles
           matched += 1;
           open = [];
           if (matched === a.pairs.length) moves.textContent = `Completed in ${moveCount} moves! 🎉`;
         } else {
-          setTimeout(() => {
-            for (const c of [x, y]) { c.textContent = '?'; c.classList.remove('oc-memory-card--open'); }
+          const pair = [x, y];
+          setTimeout(async () => {
+            await shakeTiles(pair);            // signal the miss, then flip both back
+            for (const c of pair) flipCard(c, () => {
+              c.textContent = '?';
+              c.classList.remove('oc-memory-card--open');
+            });
+            for (const c of pair) c.setAttribute('aria-label', c.getAttribute('aria-label').replace(/showing.*/, 'face down'));
             open = [];
-          }, 900);
+          }, 700);
         }
       }
     });
@@ -740,36 +888,53 @@ function mulberry32(seedStr) {
   };
 }
 
-/** Place words into a letter grid (shared with the analog emitter). */
+/**
+ * Place words into a letter grid (shared with the analog emitter).
+ *
+ * Deterministic greedy placement: longest words first, first free fit scanning
+ * row-major across the three directions (→, ↓, ↘), allowing overlaps only where
+ * letters match. Being deterministic, the validator (`wordSearchUnplaced` in
+ * validator.js) runs the IDENTICAL placement and rejects any set this can't fully
+ * place — so the learner is never shown "find X" for a word that isn't in the
+ * grid. `unplaced` lists any words that didn't fit (empty for a valid worksheet).
+ */
 export function buildWordSearch(words, gridSize) {
   const size = gridSize ?? 12;
   const rnd = mulberry32(words.join('|') + size);
   const grid = Array.from({ length: size }, () => Array(size).fill(''));
   const placed = [];
+  const unplaced = [];
   const dirs = [[0, 1], [1, 0], [1, 1]];
-  for (const raw of [...words].sort((x, y) => y.length - x.length)) {
+  const fits = (w, row, col, dr, dc) => {
+    if (row + dr * (w.length - 1) >= size || col + dc * (w.length - 1) >= size) return false;
+    for (let i = 0; i < w.length; i++) {
+      const cell = grid[row + dr * i][col + dc * i];
+      if (cell && cell !== w[i]) return false;
+    }
+    return true;
+  };
+  for (const raw of [...words].sort((x, y) => y.trim().length - x.trim().length)) {
     const w = raw.trim().toUpperCase();
     let done = false;
-    for (let attempt = 0; attempt < 200 && !done; attempt++) {
-      const [dr, dc] = dirs[Math.floor(rnd() * dirs.length)];
-      const row = Math.floor(rnd() * (size - (dr ? w.length : 0)));
-      const col = Math.floor(rnd() * (size - (dc ? w.length : 0)));
-      let ok = true;
-      for (let i = 0; i < w.length; i++) {
-        const cell = grid[row + dr * i][col + dc * i];
-        if (cell && cell !== w[i]) { ok = false; break; }
+    for (const [dr, dc] of dirs) {
+      for (let row = 0; row < size && !done; row++) {
+        for (let col = 0; col < size && !done; col++) {
+          if (fits(w, row, col, dr, dc)) {
+            for (let i = 0; i < w.length; i++) grid[row + dr * i][col + dc * i] = w[i];
+            placed.push({ word: raw, row, col, dr, dc });
+            done = true;
+          }
+        }
       }
-      if (!ok) continue;
-      for (let i = 0; i < w.length; i++) grid[row + dr * i][col + dc * i] = w[i];
-      placed.push({ word: raw, row, col, dr, dc });
-      done = true;
+      if (done) break;
     }
+    if (!done) unplaced.push(raw);
   }
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) {
     if (!grid[r][c]) grid[r][c] = alphabet[Math.floor(rnd() * 26)];
   }
-  return { grid, placed, size };
+  return { grid, placed, unplaced, size };
 }
 
 R['word-search'] = (a, index) => {
@@ -787,7 +952,11 @@ R['word-search'] = (a, index) => {
     table.appendChild(cell);
   }
   card.appendChild(table);
-  const listEl = el('p', 'oc-word-count', 'Find: ' + a.words.join(', '));
+  // List only words actually hidden in the grid. A valid worksheet places every
+  // word (the validator enforces it), so this equals a.words; it's defensive so
+  // the learner is never asked to find a word that isn't there.
+  const placedWords = placed.map((p) => p.word);
+  const listEl = el('p', 'oc-word-count', 'Find: ' + placedWords.join(', '));
   card.appendChild(listEl);
   const found = new Set();
   let start = null;
@@ -822,7 +991,8 @@ R['word-search'] = (a, index) => {
     if (hit) {
       found.add(hit.word);
       lineCells.forEach((lc) => lc.classList.add('oc-ws-cell--found'));
-      listEl.textContent = 'Find: ' + a.words.filter((w) => !found.has(w)).join(', ');
+      popTiles(lineCells); // pulse the found word (#16)
+      listEl.textContent = 'Find: ' + placedWords.filter((w) => !found.has(w)).join(', ');
       if (found.size === placed.length) listEl.textContent = 'All words found! 🎉';
     }
   });
@@ -838,21 +1008,37 @@ R['word-search'] = (a, index) => {
 R['quiz'] = (a, index) => {
   const card = activityCard(a, index);
   const track = scoreTracker(card, a.questions.length, a.passMark);
-  a.questions.forEach((q) => card.appendChild(qMcq(q, { onResolve: track })));
+  const blocks = a.questions.map((q) => qMcq(q, { onResolve: track }));
+  blocks.forEach((b) => card.appendChild(b));
+  enterTiles(blocks, { stagger: clampedStagger(blocks.length) }); // #66
   return card;
 };
 
 R['single-choice-set'] = (a, index) => {
   const card = activityCard(a, index);
   const stage = el('div');
+  stage.setAttribute('aria-live', 'polite'); // question swaps are announced (#68)
   card.appendChild(stage);
   const track = scoreTracker(card, a.questions.length);
   let current = 0;
-  function draw() {
+  async function draw() {
+    // Exit the leaving question, then paint + enter the next one (short
+    // stagger keeps the rapid-fire feel) — was an instant textContent swap
+    // unlike course-presentation/lesson (#65).
+    const leaving = [...stage.children];
+    if (leaving.length) await exitTiles(leaving, { stagger: 20 });
+    if (!stage.isConnected) return; // unmounted mid-exit (e.g. React re-render)
     stage.textContent = '';
-    if (current >= a.questions.length) { stage.appendChild(el('p', 'oc-feedback--correct oc-feedback', 'Set complete!')); return; }
+    if (current >= a.questions.length) { stage.appendChild(el('p', 'oc-feedback--correct oc-feedback', 'Set complete!')); await enterTiles([...stage.children]); return; }
     stage.appendChild(el('p', 'oc-word-count', `Question ${current + 1} of ${a.questions.length} — first instinct!`));
-    stage.appendChild(qMcq(a.questions[current], { onResolve: (ok) => { track(ok); current += 1; setTimeout(draw, 800); } }));
+    stage.appendChild(qMcq(a.questions[current], {
+      onResolve: (ok, meta) => {
+        track(ok, meta);
+        current += 1;
+        setTimeout(() => { if (stage.isConnected) draw(); }, 800); // guard: don't mutate a detached stage (#65)
+      },
+    }));
+    await enterTiles([...stage.children], { stagger: 20 });
   }
   draw();
   return card;
@@ -861,10 +1047,12 @@ R['single-choice-set'] = (a, index) => {
 R['question-set'] = (a, index) => {
   const card = activityCard(a, index);
   const track = scoreTracker(card, a.questions.length, a.passMark);
-  a.questions.forEach((q) => {
+  const blocks = a.questions.map((q) => {
     const fn = { 'mcq': qMcq, 'true-false': qTf, 'gap-fill': qGap }[q.subtype];
-    card.appendChild(fn(q, { onResolve: track }));
+    return fn(q, { onResolve: track });
   });
+  blocks.forEach((b) => card.appendChild(b));
+  enterTiles(blocks, { stagger: clampedStagger(blocks.length) }); // #66
   return card;
 };
 
@@ -884,22 +1072,30 @@ R['mark-words'] = (a, index) => {
     p.appendChild(btn);
   }
   card.appendChild(p);
-  const fb = makeFeedback(card, a, () => a.targets.join(', '));
+  // Every occurrence of a target must be marked — a repeated target ("cat"
+  // appearing 3x) only counts as fully found once every instance is tapped,
+  // not just one of them (#62).
+  const fb = makeFeedback(card, a, () => `every occurrence of: ${a.targets.join(', ')}`);
   card.appendChild(checkButton(() => {
     let hits = 0;
     let misses = 0;
     let falseAlarms = 0;
-    const seen = new Set();
+    let targetOccurrences = 0;
     for (const w of wordEls) {
       const sel = w.classList.contains('oc-markword--sel');
       const isTarget = targets.has(w.dataset.word);
       w.classList.toggle('oc-markword--wrong', sel && !isTarget);
-      if (sel && isTarget) { if (!seen.has(w.dataset.word)) { hits += 1; seen.add(w.dataset.word); } }
-      if (sel && !isTarget) falseAlarms += 1;
+      w.classList.toggle('oc-markword--missed', false); // reset before recheck below
+      if (isTarget) {
+        targetOccurrences += 1;
+        if (sel) hits += 1; else misses += 1;
+        w.classList.toggle('oc-markword--missed', !sel);
+      } else if (sel) {
+        falseAlarms += 1;
+      }
     }
-    misses = targets.size - seen.size;
     if (misses === 0 && falseAlarms === 0) fb.correct();
-    else if (hits === 0 && falseAlarms === 0) fb.neutral('Tap the words in the text first.');
+    else if (hits === 0 && falseAlarms === 0 && targetOccurrences > 0) fb.neutral('Tap the words in the text first.');
     else fb.wrong();
   }));
   return card;
@@ -910,15 +1106,24 @@ R['mark-words'] = (a, index) => {
 R['reading-comp'] = (a, index) => {
   const card = activityCard(a, index);
   const passage = el('div', 'oc-passage');
-  a.passage.split(/\n{2,}/).forEach((para) => passage.appendChild(el('p', null, para)));
+  const paras = a.passage.split(/\n{2,}/).map((para) => el('p', null, para));
+  paras.forEach((p) => passage.appendChild(p));
   card.appendChild(passage);
-  a.questions.forEach((q) => card.appendChild(Q_PRIMITIVES[q.type](q)));
+  enterTiles(paras, { stagger: clampedStagger(paras.length) }); // #66
+  const blocks = a.questions.map((q) => Q_PRIMITIVES[q.type](q));
+  blocks.forEach((b) => card.appendChild(b));
+  enterTiles(blocks, { stagger: clampedStagger(blocks.length) }); // #66
   return card;
 };
 
+/** Strip combining diacritics after NFD-normalising, on top of normLoose's
+ *  lowercase/trim/punctuation stripping — an accent-insensitive fallback
+ *  tier for "cafe" vs "café" style near-misses (#55). */
+export const normAccentless = (s) => normLoose(s).normalize('NFD').replace(/\p{M}/gu, '');
+
 R['translation'] = (a, index) => {
   const card = activityCard(a, index);
-  a.sentences.forEach((s, i) => {
+  const blocks = a.sentences.map((s, i) => {
     const block = el('div', 'oc-qblock');
     block.appendChild(el('p', 'oc-activity-prompt', `${i + 1}. ${s.source}`));
     const input = document.createElement('input');
@@ -929,12 +1134,21 @@ R['translation'] = (a, index) => {
     const fb = makeFeedback(block, s, () => s.target);
     block.appendChild(checkButton(() => {
       if (!input.value.trim()) return fb.neutral('Write your translation first.');
+      const targets = [s.target, ...(s.alternatives || [])];
       const val = normLoose(input.value);
-      const ok = [s.target, ...(s.alternatives || [])].some((t) => normLoose(t) === val);
-      ok ? fb.correct() : fb.wrong();
+      const exact = targets.some((t) => normLoose(t) === val);
+      if (exact) { fb.correct(); return; }
+      // Softer tier: accent-insensitive match — correct, but nudge them to
+      // mind the diacritics rather than silently accepting it (#55).
+      const valAccentless = normAccentless(input.value);
+      const nearMatch = targets.some((t) => normAccentless(t) === valAccentless);
+      if (nearMatch) { fb.correct(`Watch the accents: ${s.target}`); return; }
+      fb.wrong();
     }));
     card.appendChild(block);
+    return block;
   });
+  enterTiles(blocks, { stagger: clampedStagger(blocks.length) }); // #66
   return card;
 };
 
@@ -942,6 +1156,7 @@ R['scenario'] = (a, index) => {
   const card = activityCard(a, index);
   const nodes = new Map(a.nodes.map((n) => [n.id, n]));
   const stage = el('div', 'oc-chat');
+  stage.setAttribute('aria-live', 'polite'); // new turns/choices are announced (#68)
   card.appendChild(stage);
   function show(id) {
     const n = nodes.get(id);
@@ -949,6 +1164,7 @@ R['scenario'] = (a, index) => {
     bubble.appendChild(el('span', 'oc-bubble-name', n.speaker));
     bubble.appendChild(el('span', null, n.text));
     stage.appendChild(bubble);
+    enterTiles([bubble]); // each turn arrives with motion (#13)
     if (n.isEnd) {
       if (n.endMessage) stage.appendChild(el('p', 'oc-feedback oc-feedback--correct', n.endMessage));
       const again = el('button', 'oc-btn oc-btn--check', '↻ Start again');
@@ -967,6 +1183,7 @@ R['scenario'] = (a, index) => {
         mine.appendChild(el('span', 'oc-bubble-name', 'You'));
         mine.appendChild(el('span', null, c.text));
         stage.appendChild(mine);
+        enterTiles([mine]); // the learner's reply slides in too (#13)
         const nextNode = nodes.get(c.nextNode);
         if (nextNode && nextNode.feedback) stage.appendChild(el('p', 'oc-bubble-gloss', nextNode.feedback));
         show(c.nextNode);
@@ -974,6 +1191,7 @@ R['scenario'] = (a, index) => {
       choiceBox.appendChild(btn);
     });
     stage.appendChild(choiceBox);
+    enterTiles([...choiceBox.children]); // choices stagger in (#13)
     choiceBox.scrollIntoView({ block: 'nearest' });
   }
   show(a.startNode);
@@ -984,10 +1202,13 @@ R['lesson'] = (a, index) => {
   const card = activityCard(a, index);
   const pages = new Map(a.pages.map((p) => [p.id, p]));
   const stage = el('div');
+  stage.setAttribute('aria-live', 'polite'); // page swaps are announced (#68)
   card.appendChild(stage);
-  function show(id) {
+  async function show(id) {
+    const leaving = [...stage.children];
+    if (leaving.length) await exitTiles(leaving); // wipe the old page with motion (#13)
     stage.textContent = '';
-    if (id == null) { stage.appendChild(el('p', 'oc-feedback oc-feedback--correct', 'Lesson complete! 🎉')); return; }
+    if (id == null) { stage.appendChild(el('p', 'oc-feedback oc-feedback--correct', 'Lesson complete! 🎉')); enterTiles([...stage.children]); return; }
     const p = pages.get(id);
     if (p.title) stage.appendChild(el('h4', 'oc-content-heading', p.title));
     if (p.pageType === 'content') {
@@ -1004,6 +1225,7 @@ R['lesson'] = (a, index) => {
         stage.appendChild(btn);
       } }));
     }
+    enterTiles([...stage.children]); // paint the new page in with motion (#13)
   }
   show(a.startPage);
   return card;
@@ -1030,6 +1252,16 @@ R['crossword'] = (a, index) => {
   const grid = el('div', 'oc-ws oc-cw');
   grid.style.gridTemplateColumns = `repeat(${maxC + 1}, 1fr)`;
   const inputs = new Map();
+  // Arrow-key navigation + auto-advance typing (#68): no keyboard flow existed
+  // before — every cell was reachable only by Tab, one at a time.
+  let dir = 'across';
+  const step = () => (dir === 'across' ? [0, 1] : [1, 0]);
+  const move = (r, c, dr, dc) => {
+    let nr = r + dr;
+    let nc = c + dc;
+    const next = inputs.get(`${nr},${nc}`);
+    if (next) next.focus();
+  };
   for (let r = 0; r <= maxR; r++) for (let c = 0; c <= maxC; c++) {
     const key = `${r},${c}`;
     if (!solution.has(key)) { grid.appendChild(el('span', 'oc-cw-block')); continue; }
@@ -1039,6 +1271,18 @@ R['crossword'] = (a, index) => {
     input.maxLength = 1;
     input.className = 'oc-cw-input';
     input.setAttribute('aria-label', `crossword cell ${key}`);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowRight') { ev.preventDefault(); dir = 'across'; move(r, c, 0, 1); }
+      else if (ev.key === 'ArrowLeft') { ev.preventDefault(); dir = 'across'; move(r, c, 0, -1); }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); dir = 'down'; move(r, c, 1, 0); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); dir = 'down'; move(r, c, -1, 0); }
+      else if (ev.key === 'Backspace' && !input.value) { const [dr, dc] = step(); move(r, c, -dr, -dc); }
+    });
+    input.addEventListener('input', () => {
+      if (!input.value) return;
+      const [dr, dc] = step();
+      move(r, c, dr, dc); // typing advances to the next cell in the active direction
+    });
     inputs.set(key, input);
     cell.appendChild(input);
     grid.appendChild(cell);
@@ -1077,6 +1321,7 @@ R['image-hotspot'] = (a, index) => {
   img.className = 'oc-hotspot-img';
   frame.appendChild(img);
   const info = el('p', 'oc-feedback');
+  info.setAttribute('aria-live', 'polite'); // hotspot info wasn't announced (#68)
   a.hotspots.forEach((h, i) => {
     const dot = el('button', 'oc-hotspot-dot', String(i + 1));
     dot.type = 'button';
@@ -1086,6 +1331,7 @@ R['image-hotspot'] = (a, index) => {
     dot.addEventListener('click', () => {
       info.className = 'oc-feedback oc-feedback--correct';
       info.textContent = `${i + 1}: ${h.label}` + (h.description ? ` — ${h.description}` : '');
+      popTiles([dot]); // pulse the tapped hotspot (#16)
     });
     frame.appendChild(dot);
   });
@@ -1139,6 +1385,7 @@ R['survey'] = (a, index) => {
         const input = document.createElement('input');
         input.type = 'radio';
         input.name = name;
+        input.addEventListener('change', () => popTiles([label])); // confirm the pick (#16)
         label.appendChild(input);
         label.appendChild(el('span', null, String(i)));
         row.appendChild(label);
@@ -1153,6 +1400,7 @@ R['survey'] = (a, index) => {
         const input = document.createElement('input');
         input.type = 'radio';
         input.name = name;
+        input.addEventListener('change', () => popTiles([label])); // confirm the pick (#16)
         label.appendChild(input);
         label.appendChild(el('span', null, o));
         list.appendChild(label);
@@ -1168,6 +1416,7 @@ R['survey'] = (a, index) => {
     card.appendChild(block);
   });
   const done = el('p', 'oc-feedback');
+  done.setAttribute('aria-live', 'polite'); // confirmation line wasn't announced (#68)
   card.appendChild(checkButton(() => { done.className = 'oc-feedback oc-feedback--correct'; done.textContent = 'Thank you — responses noted (they stay on this device).'; }, 'Done'));
   card.appendChild(done);
   return card;
@@ -1178,6 +1427,7 @@ R['poll'] = (a, index) => {
   card.appendChild(el('p', 'oc-activity-prompt', a.question));
   const list = el('div', 'oc-options');
   const info = el('p', 'oc-feedback');
+  info.setAttribute('aria-live', 'polite'); // confirmation line wasn't announced (#68)
   a.options.forEach((o) => {
     const btn = el('button', 'oc-option oc-choice-btn', o.text);
     btn.type = 'button';
@@ -1186,6 +1436,7 @@ R['poll'] = (a, index) => {
       btn.classList.add('oc-option--picked');
       info.className = 'oc-feedback oc-feedback--correct';
       info.textContent = o.followUp || 'Noted — there are no wrong answers here.';
+      popTiles([btn]); // confirm the pick (#16)
     });
     list.appendChild(btn);
   });
@@ -1220,7 +1471,18 @@ export function renderWorksheet(ws, container) {
     if (section.instructions) sec.appendChild(el('p', 'oc-section-instructions', section.instructions));
     section.activities.forEach((a) => {
       counter += 1;
-      sec.appendChild(R[a.type](a, counter));
+      // Isolate each activity: a throwing renderer (a bug, or a validator blind
+      // spot) must not blank the rest of the worksheet for the student (#69).
+      try {
+        sec.appendChild(R[a.type](a, counter));
+      } catch (err) {
+        console.error(`renderWorksheet: activity ${counter} (${a.type}) failed to render`, err);
+        const fallback = activityCard(a, counter);
+        const msg = el('p', 'oc-feedback oc-feedback--wrong', "This activity couldn't be displayed.");
+        msg.setAttribute('aria-live', 'polite');
+        fallback.appendChild(msg);
+        sec.appendChild(fallback);
+      }
     });
     root.appendChild(sec);
   });

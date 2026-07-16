@@ -30,6 +30,48 @@ function seededShuffle(arr, seedStr) {
   return a;
 }
 
+/**
+ * Composite numbered markers (small circle + label) into an inline SVG
+ * string, purely at the string level (no DOM), then wrap as a Markdown
+ * data-URI image. Hotspot x/y are percentages of the scene; they are
+ * converted into the SVG's own viewBox coordinate space so the dots land
+ * in the right place regardless of the scene's native size.
+ */
+function svgWithHotspotMarkers(svg, hotspots) {
+  const vbMatch = svg.match(/viewBox\s*=\s*["']\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*["']/i);
+  let minX = 0; let minY = 0; let width = 100; let height = 100;
+  if (vbMatch) {
+    [minX, minY, width, height] = vbMatch.slice(1, 5).map(Number);
+  } else {
+    const wMatch = svg.match(/\bwidth\s*=\s*["']?\s*([\d.]+)/i);
+    const hMatch = svg.match(/\bheight\s*=\s*["']?\s*([\d.]+)/i);
+    if (wMatch) width = Number(wMatch[1]);
+    if (hMatch) height = Number(hMatch[1]);
+  }
+  const r = Math.max(width, height) * 0.03;
+  const dots = hotspots.map((h, i) => {
+    const cx = minX + (h.x / 100) * width;
+    const cy = minY + (h.y / 100) * height;
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#e11d48" stroke="#fff" stroke-width="${r * 0.15}"/>` +
+      `<text x="${cx}" y="${cy}" font-size="${r * 1.2}" font-weight="bold" fill="#fff" text-anchor="middle" dominant-baseline="central">${i + 1}</text>`;
+  }).join('');
+  const markers = `<g>${dots}</g>`;
+  return /<\/svg\s*>/i.test(svg) ? svg.replace(/<\/svg\s*>/i, `${markers}</svg>`) : svg + markers;
+}
+
+function svgDataUri(svg) {
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * Quote and escape a value for a YAML frontmatter scalar: wrap in double
+ * quotes, escape backslashes and double quotes, strip newlines (a raw
+ * newline would break the single-line "key: value" frontmatter entry).
+ */
+function yamlEscape(v) {
+  return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, ' ')}"`;
+}
+
 function mcqBody(q, n) {
   const opts = q.options.map((o, i) => `   - [ ] ${LETTERS[i].toUpperCase()}. ${o}`).join('\n');
   return `**${n}.** ${q.question}\n\n${opts}`;
@@ -130,13 +172,16 @@ const E = {
   'translation-compare': (a, n) => ({
     body: a.pairs.map((p) => {
       const marks = p.links.map((l, i) => i + 1);
+      // A source/target token can participate in more than one link — use
+      // filter (not findIndex) so every mark for that token is printed,
+      // not just the first (#58).
       const src = p.sourceTokens.map((t, i) => {
-        const li = p.links.findIndex((l) => l.s === i);
-        return li >= 0 ? `${t}⁽${marks[li]}⁾` : t;
+        const nums = p.links.map((l, li) => (l.s === i ? marks[li] : null)).filter((x) => x != null);
+        return nums.length ? `${t}⁽${nums.join(',')}⁾` : t;
       }).join(' ');
       const tgt = p.targetTokens.map((t, i) => {
-        const li = p.links.findIndex((l) => l.t === i);
-        return li >= 0 ? `${t}⁽${marks[li]}⁾` : t;
+        const nums = p.links.map((l, li) => (l.t === i ? marks[li] : null)).filter((x) => x != null);
+        return nums.length ? `${t}⁽${nums.join(',')}⁾` : t;
       }).join(' ');
       const notes = p.links.filter((l) => l.note).map((l) => `> ⁽${marks[p.links.indexOf(l)]}⁾ ${l.note}`).join('\n');
       return `${p.headline ? `**${p.headline}**\n\n` : ''}> ${src}\n> ${tgt}${notes ? `\n${notes}` : ''}`;
@@ -231,17 +276,25 @@ const E = {
     });
     const best = [];
     let cur = a.startNode;
+    let everyChoiceExplicit = true; // false if any non-end node on the path lacked a marked isCorrect choice
     const nodesById = new Map(a.nodes.map((x) => [x.id, x]));
     for (let guard = 0; guard < a.nodes.length + 1; guard++) {
       const node = nodesById.get(cur);
       best.push(boxNo.get(cur));
       if (!node || node.isEnd) break;
+      if (!node.choices.some((c) => c.isCorrect === true)) everyChoiceExplicit = false;
       const pick = node.choices.find((c) => c.isCorrect) || node.choices[0];
       cur = pick.nextNode;
     }
+    // Only assert a "Best path" when every step was an explicit isCorrect choice —
+    // otherwise the fallback to choices[0] would print an arbitrary path as if it
+    // were the answer key (#52).
+    const key = everyChoiceExplicit
+      ? `${n}. Best path: box ${best.join(' → box ')}`
+      : `${n}. This scenario has no fully marked correct path (some choices are missing "isCorrect") — see the box-by-box choices above; no single path can be asserted as the answer.`;
     return {
       body: `**${n}.** ${a.instruction || 'Choose your path — start at box 1.'}\n\n${boxes.join('\n\n')}`,
-      key: `${n}. Best path: box ${best.join(' → box ')}`,
+      key,
     };
   },
   'lesson': (a, n) => {
@@ -265,7 +318,10 @@ const E = {
     const all = [...a.clues.across.map((c) => ({ ...c, dir: 'across' })), ...a.clues.down.map((c) => ({ ...c, dir: 'down' }))];
     let maxR = 0; let maxC = 0;
     const solution = new Map();
+    const startNum = new Map(); // "r,c" -> clue number of the cell where a clue starts
     for (const c of all) {
+      const key = `${c.row},${c.col}`;
+      if (!startNum.has(key)) startNum.set(key, c.number);
       const L = c.answer.toUpperCase();
       for (let i = 0; i < L.length; i++) {
         const r = c.dir === 'across' ? c.row : c.row + i;
@@ -276,11 +332,24 @@ const E = {
     }
     const gridLines = [];
     const keyLines = [];
+    const legend = []; // for clue numbers too wide to fit inline (>= 10)
     for (let r = 0; r <= maxR; r++) {
       let row = ''; let solved = '';
       for (let c = 0; c <= maxC; c++) {
-        row += solution.has(`${r},${c}`) ? '☐ ' : '■ ';
-        solved += solution.has(`${r},${c}`) ? solution.get(`${r},${c}`) + ' ' : '■ ';
+        const key = `${r},${c}`;
+        if (solution.has(key)) {
+          const num = startNum.get(key);
+          if (num != null && num <= 9) {
+            row += `${num} `;
+          } else {
+            if (num != null) legend.push(`${num} → row ${r + 1}, col ${c + 1}`);
+            row += '☐ ';
+          }
+          solved += solution.get(key) + ' ';
+        } else {
+          row += '■ ';
+          solved += '■ ';
+        }
       }
       gridLines.push(row.trimEnd());
       keyLines.push(solved.trimEnd());
@@ -288,16 +357,21 @@ const E = {
     const clues = (dir, label) => a.clues[dir].length
       ? `**${label}**\n` + a.clues[dir].map((c) => `${c.number}. ${c.clue} (${c.answer.length})`).join('\n')
       : '';
+    const legendBlock = legend.length ? `\n\n*Clue numbers:* ${legend.join('; ')}` : '';
     return {
-      body: `**${n}.** Crossword\n\n\`\`\`\n${gridLines.join('\n')}\n\`\`\`\n\n${clues('across', 'Across')}\n\n${clues('down', 'Down')}`.trim(),
+      body: `**${n}.** Crossword\n\n\`\`\`\n${gridLines.join('\n')}\n\`\`\`${legendBlock}\n\n${clues('across', 'Across')}\n\n${clues('down', 'Down')}`.trim(),
       key: `${n}.\n\`\`\`\n${keyLines.join('\n')}\n\`\`\``,
     };
   },
-  'image-hotspot': (a, n) => ({
-    body: `**${n}.** ${a.instruction || 'Label the picture.'} *(the picture shows numbered markers — write each label next to its number)*\n\n` +
-      a.hotspots.map((h, i) => `${i + 1}. ${line(20)}`).join('\n'),
-    key: `${n}. ` + a.hotspots.map((h, i) => `(${i + 1}) ${h.label}`).join(', '),
-  }),
+  'image-hotspot': (a, n) => {
+    const scene = svgWithHotspotMarkers(a.svg, a.hotspots);
+    return {
+      body: `**${n}.** ${a.instruction || 'Label the picture.'} *(the picture shows numbered markers — write each label next to its number)*\n\n` +
+        `![scene](${svgDataUri(scene)})\n\n` +
+        a.hotspots.map((h, i) => `${i + 1}. ${line(20)}`).join('\n'),
+      key: `${n}. ` + a.hotspots.map((h, i) => `(${i + 1}) ${h.label}`).join(', '),
+    };
+  },
 
   'summary': (a, n) => ({
     body: `**${n}.** ${a.intro ? a.intro + '\n\n' : ''}Tick the statements that are true, then copy them below as a summary paragraph.\n\n` +
@@ -349,9 +423,9 @@ export function emitAnalog(ws) {
   const meta = [ws.subject, ws.topic, ws.audience, ws.estimatedMinutes ? `~${ws.estimatedMinutes} min` : null].filter(Boolean).join(' · ');
   const parts = [
     '---',
-    `title: ${ws.title}`,
-    `subject: ${ws.subject}`,
-    `language: ${ws.language}`,
+    `title: ${yamlEscape(ws.title)}`,
+    `subject: ${yamlEscape(ws.subject)}`,
+    `language: ${yamlEscape(ws.language)}`,
     'source: EnsinoLibre',
     '---',
     '',

@@ -108,6 +108,87 @@ export async function popTiles(nodes) {
   }
 }
 
+/**
+ * 3D card flip driven by the WAAPI: rotate the node to edge-on, run
+ * `updateContent()` at the invisible midpoint to swap front/back, then rotate
+ * the (new) face back to flat. Under reduced motion / no `animate`, the content
+ * is swapped instantly — so the card is never left mid-flip or blank.
+ */
+export async function flipCard(node, updateContent) {
+  if (!node || typeof node.animate !== 'function' || reduceMotion()) { updateContent(); return; }
+  node.getAnimations?.().forEach((a) => a.cancel()); // don't stack rapid flips
+  const half = 150;
+  const out = node.animate(
+    [{ transform: 'perspective(600px) rotateY(0deg)' }, { transform: 'perspective(600px) rotateY(90deg)' }],
+    { duration: half, easing: EASE.inOutSine, fill: 'forwards' },
+  );
+  await settle([out], half + 120);
+  updateContent();
+  const inn = node.animate(
+    [{ transform: 'perspective(600px) rotateY(-90deg)' }, { transform: 'perspective(600px) rotateY(0deg)' }],
+    { duration: half, easing: EASE.inOutSine, fill: 'forwards' },
+  );
+  await settle([inn], half + 120);
+  // Resting state is no transform; the forwards-filled `inn` holds rotateY(0),
+  // which is visually identical, and the next flip cancels it.
+}
+
+/**
+ * FLIP-style swap of two adjacent nodes that have just traded DOM positions
+ * (e.g. an ordering list's ↑/↓ move). Call this AFTER the reorder has already
+ * happened in the DOM: it measures where each node used to be relative to
+ * where it now is (from the caller-supplied previous rects), applies the
+ * inverse transform so nothing visually jumps, then animates both back to
+ * identity. Graceful no-op under prefers-reduced-motion / no `animate` — the
+ * caller's DOM reorder is already complete either way, so there is nothing
+ * further to do. Never leaves a transform filled (fill: 'none' default), so
+ * the nodes always end at their natural laid-out position.
+ */
+export function flipSwap(nodeA, prevRectA, nodeB, prevRectB) {
+  if (!canAnimate([nodeA, nodeB])) return Promise.resolve();
+  const newA = nodeA.getBoundingClientRect();
+  const newB = nodeB.getBoundingClientRect();
+  const dyA = prevRectA.top - newA.top;
+  const dyB = prevRectB.top - newB.top;
+  const anims = [];
+  if (dyA) anims.push(nodeA.animate(
+    [{ transform: `translateY(${dyA}px)` }, { transform: 'translateY(0)' }],
+    { duration: 200, easing: EASE.inOutSine },
+  ));
+  if (dyB) anims.push(nodeB.animate(
+    [{ transform: `translateY(${dyB}px)` }, { transform: 'translateY(0)' }],
+    { duration: 200, easing: EASE.inOutSine },
+  ));
+  if (!anims.length) return Promise.resolve();
+  return settle(anims, 200 + 150);
+}
+
+/** Soft scale-pop to affirm a correct answer (paired with shakeTiles for wrong). */
+export async function flashCorrect(node) {
+  if (!node || typeof node.animate !== 'function' || reduceMotion()) return;
+  node.animate(
+    [{ transform: 'scale(1)' }, { transform: 'scale(1.03)', offset: 0.4 }, { transform: 'scale(1)' }],
+    { duration: 320, easing: EASE.outBack },
+  );
+}
+
+/** Quick horizontal shake to signal a wrong/mismatched action. No-op when reduced. */
+export async function shakeTiles(nodes) {
+  if (!canAnimate(nodes)) return;
+  const anims = nodes.map((n) => n.animate(
+    [
+      { transform: 'translateX(0)' },
+      { transform: 'translateX(-5px)', offset: 0.2 },
+      { transform: 'translateX(5px)', offset: 0.4 },
+      { transform: 'translateX(-4px)', offset: 0.6 },
+      { transform: 'translateX(4px)', offset: 0.8 },
+      { transform: 'translateX(0)' },
+    ],
+    { duration: 380, easing: EASE.inOutSine },
+  ));
+  await settle(anims, 380 + 150);
+}
+
 /** A left→right pulse wave over word blocks (used when reading a sentence aloud). */
 export async function pulseWave(nodes) {
   if (!canAnimate(nodes)) return;

@@ -46,6 +46,19 @@ export type ActivityType =
   | 'word-transform'
   | 'translation-compare'
   | 'flow'
+  // Synced from core's worksheet schema (site/assets/js/validator.js) — these
+  // ship in EnsinoLibre's worksheet engine but don't yet have a dedicated
+  // PWA component/interface below; kept here as string literals so the
+  // catalogue-integrity test (every schema type must appear in this union)
+  // stays green. Add full interfaces if/when the PWA gets its own component.
+  | 'matching'
+  | 'ordering'
+  | 'open-response'
+  | 'dialogue'
+  | 'grammar-forms'
+  | 'translation'
+  | 'survey'
+  | 'poll'
 
 export interface QuizQuestion {
   id: string

@@ -35,7 +35,11 @@
       "required": ["question", "options", "answer"],
       "properties": {
         "question": { "$ref": "#/$defs/nonEmpty" },
-        "options": { "type": "array", "minItems": 2, "maxItems": 6, "items": { "$ref": "#/$defs/nonEmpty" } },
+        "options": {
+          "type": "array", "minItems": 2, "maxItems": 6, "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true,
+          "description": "Every option must be unique (validator.js also rejects options that only differ by case/whitespace — see #60)."
+        },
         "answer": { "type": "integer", "minimum": 0 },
         "hint": { "$ref": "#/$defs/hint" },
         "explanation": { "type": "string" }
@@ -55,7 +59,11 @@
       "type": "object",
       "required": ["text"],
       "properties": {
-        "text": { "type": "string", "pattern": "\\{\\{[^{}]+\\}\\}" },
+        "text": {
+          "type": "string",
+          "description": "Prose with 1–5 gaps written as {{answer}} (alternatives separated by |). More than 5 gaps is rejected.",
+          "pattern": "^(?!(?:[\\s\\S]*?\\{\\{[^{}]+\\}\\}){6})[\\s\\S]*\\{\\{[^{}]+\\}\\}[\\s\\S]*$"
+        },
         "hint": { "$ref": "#/$defs/hint" },
         "explanation": { "type": "string" }
       }
@@ -159,7 +167,14 @@
             "grammar": { "$ref": "#/$defs/nonEmpty" },
             "forms": { "type": "array", "minItems": 2, "maxItems": 6, "items": {
               "type": "object", "required": ["label", "sentence"],
-              "properties": { "label": { "$ref": "#/$defs/nonEmpty" }, "sentence": { "$ref": "#/$defs/nonEmpty" }, "gloss": { "type": "string" } } } }
+              "properties": {
+                "label": { "$ref": "#/$defs/nonEmpty" },
+                "sentence": {
+                  "type": "string", "minLength": 1, "pattern": "\\*\\*[^*]+\\*\\*",
+                  "description": "Must wrap the changing words in **double asterisks** — the renderer animates that span (see #61)."
+                },
+                "gloss": { "type": "string" }
+              } } }
           } } },
         { "if": { "properties": { "type": { "const": "tense-shift" } } }, "then": {
           "required": ["verb", "tenses"],
@@ -168,7 +183,14 @@
             "context": { "type": "string" },
             "tenses": { "type": "array", "minItems": 2, "maxItems": 6, "items": {
               "type": "object", "required": ["label", "sentence"],
-              "properties": { "label": { "$ref": "#/$defs/nonEmpty" }, "sentence": { "$ref": "#/$defs/nonEmpty" }, "gloss": { "type": "string" } } } }
+              "properties": {
+                "label": { "$ref": "#/$defs/nonEmpty" },
+                "sentence": {
+                  "type": "string", "minLength": 1, "pattern": "\\*\\*[^*]+\\*\\*",
+                  "description": "Must wrap the changing (tense-bearing) words in **double asterisks** — the renderer animates that span (see #61)."
+                },
+                "gloss": { "type": "string" }
+              } } }
           } } },
         { "if": { "properties": { "type": { "const": "word-transform" } } }, "then": {
           "required": ["baseWord", "steps"],
@@ -281,7 +303,7 @@
           "required": ["startNode", "nodes"],
           "properties": {
             "startNode": { "$ref": "#/$defs/nonEmpty" },
-            "nodes": { "type": "array", "minItems": 2, "items": {
+            "nodes": { "type": "array", "minItems": 2, "maxItems": 20, "items": {
               "type": "object", "required": ["id", "speaker", "text"],
               "properties": {
                 "id": { "$ref": "#/$defs/nonEmpty" },
@@ -299,7 +321,7 @@
           "required": ["startPage", "pages"],
           "properties": {
             "startPage": { "$ref": "#/$defs/nonEmpty" },
-            "pages": { "type": "array", "minItems": 2, "items": {
+            "pages": { "type": "array", "minItems": 2, "maxItems": 20, "items": {
               "type": "object", "required": ["id", "pageType"],
               "properties": {
                 "id": { "$ref": "#/$defs/nonEmpty" },
@@ -378,9 +400,9 @@
       "properties": {
         "number": { "type": "integer", "minimum": 1 },
         "clue": { "$ref": "#/$defs/nonEmpty" },
-        "answer": { "type": "string", "pattern": "^\\p{L}+$" },
-        "row": { "type": "integer", "minimum": 0 },
-        "col": { "type": "integer", "minimum": 0 }
+        "answer": { "type": "string", "pattern": "^\\p{L}+$", "maxLength": 15 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "col": { "type": "integer", "minimum": 0, "maximum": 20 }
       }
     }
   }

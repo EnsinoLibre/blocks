@@ -1,17 +1,9 @@
 /**
- * EnsinoLibre — worksheet exporters.
+ * EnsinoLibre — worksheet exporters (shared by the generator and the teacher app).
  *
- * Everything a teacher needs to take a worksheet out of the browser:
- * JSON (re-import/share), Analog Markdown (the paper version, via
- * emitAnalog), Analog PDF (print dialog → "Save as PDF"), and Moodle XML
- * question import. All run client-side and are self-contained.
- *
- * Ported from core's site/assets/js/exporters.js so every consumer of the
- * renderer gets the same export options; core should switch to this module
- * once the package is consumable there.
- *
- * Browser-only module (uses Blob/DOM); the pure XML/Markdown builders
- * (toMoodleXML, emitAnalog) remain importable for testing.
+ * Exposes: JSON, Analog Markdown, Analog PDF (print), and Moodle XML question
+ * import. All run client-side and are self-contained. NOT wired into the
+ * student aula view — export is a teacher/author affordance only.
  */
 import { emitAnalog } from './analog.js';
 
@@ -27,7 +19,10 @@ export function download(name, content, mime) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(a.href);
+  // Revoke on a short delay, not synchronously: Safari/iOS can start the
+  // download fetch just after click() returns, and revoking the object URL
+  // before that fetch runs produces an empty file (#70).
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 /* ---------- JSON ---------- */
@@ -40,13 +35,10 @@ export function exportMarkdown(ws) {
   download(`${slugify(ws.title)}.worksheet.md`, emitAnalog(ws), 'text/markdown;charset=utf-8');
 }
 
-/* ---------- Analog PDF (print the rendered analog worksheet) ----------
- * Pass `markdownToHtml` (e.g. marked.parse) for a formatted page; without
- * it the Markdown prints as preformatted text. */
-export function exportAnalogPDF(ws, { markdownToHtml } = {}) {
+/* ---------- Analog PDF (print the rendered analog worksheet) ---------- */
+export function exportAnalogPDF(ws) {
   const md = emitAnalog(ws);
-  const toHtml = markdownToHtml || (typeof window !== 'undefined' && window.marked && window.marked.parse) || null;
-  const body = toHtml ? toHtml(md) : `<pre>${escapeHtml(md)}</pre>`;
+  const body = (window.marked ? window.marked.parse(md) : `<pre>${escapeHtml(md)}</pre>`);
   const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(ws.title)}</title>
 <style>
   @page { margin: 18mm; }
@@ -57,6 +49,7 @@ export function exportAnalogPDF(ws, { markdownToHtml } = {}) {
   table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
   th, td { border: 1px solid #999; padding: 4pt 6pt; text-align: left; font-size: 10.5pt; }
   code, pre { font-family: 'Consolas', monospace; font-size: 10pt; }
+  img { max-width: 100%; height: auto; display: block; margin: 8pt 0; }
   pre { background: #f5f5f5; padding: 8pt; border: 1px solid #ddd; white-space: pre; overflow: visible; }
   blockquote { border-left: 3px solid #ccc; margin: 6pt 0; padding: 2pt 0 2pt 10pt; color: #333; }
   ul, ol { margin: 6pt 0; }
@@ -65,11 +58,18 @@ export function exportAnalogPDF(ws, { markdownToHtml } = {}) {
 </style></head><body>${body}
 <script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>
 </body></html>`;
-  const win = window.open('', '_blank');
-  if (!win) { alert('Please allow pop-ups to export a PDF (then use your browser’s “Save as PDF”).'); return; }
-  win.document.open();
-  win.document.write(doc);
-  win.document.close();
+  // Blob-URL popup instead of document.write: document.write on a popup is
+  // deprecated and blocked in some embedder contexts (#70). The auto-print
+  // onload script embedded in `doc` above still fires once the blob loads.
+  const blob = new Blob([doc], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank');
+  if (!win) {
+    URL.revokeObjectURL(url);
+    alert('Please allow pop-ups to export a PDF (then use your browser’s “Save as PDF”).');
+    return;
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /* ---------- Moodle XML (question import) ---------- */
@@ -115,11 +115,15 @@ function clozeAnswer(answers) {
   const esc = (a) => a.replace(/[\\{}~=#|]/g, (m) => '\\' + m);
   return answers.map((a, i) => (i === 0 ? '=' : '~=') + esc(a)).join('');
 }
-function gapXML(q, i, GAP_RE) {
+function gapXML(q, i, GAP_RE, passage) {
+  // Gap substitution runs on the question text ONLY — the passage (if any)
+  // is prepended afterwards so a literal "{{...}}" inside the passage prose
+  // is never mistaken for a cloze gap (#57).
   let body = q.text.replace(GAP_RE, (_, inner) => {
     const answers = inner.split('|').map((s) => s.trim()).filter(Boolean);
     return `{1:SHORTANSWER:${clozeAnswer(answers)}}`;
   });
+  if (passage) body = `Passage: ${passage}\n\n${body}`;
   return `  <question type="cloze">
     ${qName(q.text, i)}
     <questiontext format="html">${htmlText('<p>' + escapeHtml(body).replace(/\{1:SHORTANSWER:[^}]*\}/g, (m) => m) + '</p>')}</questiontext>
@@ -166,15 +170,17 @@ export function toMoodleXML(ws) {
   const GAP_RE = /\{\{([^{}]+)\}\}/g;
   const items = collectQuestions(ws);
   const body = items.map((it, i) => {
-    // For reading-comp questions, prepend the passage into the question text once handled per-item.
+    // For reading-comp questions, prepend the passage into the question text
+    // once handled per-item — all four question kinds carry the passage,
+    // not just mcq/tf (#57). gap-fill gets it via gapXML (see there for why).
     let q = it.q;
-    if (it.passage && (it.kind === 'mcq' || it.kind === 'tf')) {
-      const field = it.kind === 'tf' ? 'statement' : 'question';
+    if (it.passage && (it.kind === 'mcq' || it.kind === 'tf' || it.kind === 'match')) {
+      const field = it.kind === 'tf' ? 'statement' : it.kind === 'match' ? 'prompt' : 'question';
       q = { ...q, [field]: `Passage: ${it.passage}\n\n${q[field]}` };
     }
     if (it.kind === 'mcq') return mcqXML(q, i + 1);
     if (it.kind === 'tf') return tfXML(q, i + 1);
-    if (it.kind === 'gap') return gapXML(q, i + 1, GAP_RE);
+    if (it.kind === 'gap') return gapXML(q, i + 1, GAP_RE, it.passage);
     if (it.kind === 'match') return matchXML(q, i + 1);
     return '';
   }).filter(Boolean).join('\n');
@@ -196,37 +202,4 @@ export function exportMoodle(ws) {
 /** Count of Moodle-importable questions (for UI hints). */
 export function moodleQuestionCount(ws) {
   return collectQuestions(ws).length;
-}
-
-/**
- * Render an export toolbar into (or before) a rendered worksheet.
- * Returns the toolbar element. Options:
- *   markdownToHtml — converter used by the PDF export (e.g. marked.parse)
- *   formats — subset of ['json', 'markdown', 'pdf', 'moodle'] (default all)
- */
-export function renderExportBar(ws, container, { markdownToHtml, formats } = {}) {
-  const want = formats || ['json', 'markdown', 'pdf', 'moodle'];
-  const bar = document.createElement('div');
-  bar.className = 'oc-export-bar';
-  const label = document.createElement('span');
-  label.className = 'oc-export-label';
-  label.textContent = 'Export:';
-  bar.appendChild(label);
-  const add = (text, title, fn) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'oc-btn oc-btn--check';
-    btn.textContent = text;
-    btn.title = title;
-    btn.addEventListener('click', fn);
-    bar.appendChild(btn);
-  };
-  if (want.includes('pdf')) add('Print / PDF', 'Print the paper version (choose “Save as PDF”)', () => exportAnalogPDF(ws, { markdownToHtml }));
-  if (want.includes('markdown')) add('Markdown', 'Download the paper version as Markdown (Obsidian-ready)', () => exportMarkdown(ws));
-  if (want.includes('moodle')) {
-    if (moodleQuestionCount(ws) > 0) add('Moodle XML', 'Download the auto-gradeable questions as a Moodle question import', () => exportMoodle(ws));
-  }
-  if (want.includes('json')) add('JSON', 'Download the worksheet source (re-import it anywhere)', () => exportJSON(ws));
-  container.appendChild(bar);
-  return bar;
 }

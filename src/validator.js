@@ -11,6 +11,15 @@
  */
 
 const GAP_RE = /\{\{([^{}]+)\}\}/g;
+// #61: at least one **bold** span — the changing chunk grammar-forms/
+// tense-shift sentences animate (renderer.js sentenceTiles/popTiles).
+const EMPHASIS_RE = /\*\*[^*]+\*\*/;
+
+// Crossword grid bounds. row/col feed an O(maxR*maxC) grid build in
+// renderer.js / analog.js; without a cap a single clue (e.g. row: 999999) can
+// hang the tab. Kept in sync with schema/worksheet.schema.json (crosswordClue).
+const CROSSWORD_MAX_COORD = 20;
+const CROSSWORD_MAX_ANSWER = 15;
 
 function str(v) { return typeof v === 'string' && v.trim().length > 0; }
 function arr(v, min, max) { return Array.isArray(v) && v.length >= min && (max == null || v.length <= max); }
@@ -31,13 +40,25 @@ export function parseGaps(text) {
   return segments;
 }
 
-function hasGap(text) { GAP_RE.lastIndex = 0; const r = GAP_RE.test(text); GAP_RE.lastIndex = 0; return r; }
-
 /* ---------- per-question primitives (reused by set types) ---------- */
 
 function vMcqCore(a, at, e) {
   if (!str(a.question)) e.push(`${at}: missing "question".`);
   if (!arr(a.options, 2, 6) || !a.options.every(str)) e.push(`${at}: "options" must be 2–6 non-empty strings.`);
+  else {
+    // #60: two options that only differ by case/whitespace are visually
+    // identical to a learner, so picking either the correct index or its
+    // look-alike would be indistinguishable — matching already enforces
+    // unique "right" values, MCQ-shaped types need the same guarantee.
+    const seen = new Set();
+    const dupes = new Set();
+    for (const o of a.options) {
+      const key = o.trim().toLowerCase();
+      if (seen.has(key)) dupes.add(o.trim());
+      seen.add(key);
+    }
+    if (dupes.size) e.push(`${at}: "options" has duplicate option(s) (${[...dupes].join(', ')}) — every option must be unique.`);
+  }
   if (!int(a.answer, 0) || (Array.isArray(a.options) && a.answer >= a.options.length)) {
     e.push(`${at}: "answer" must be the zero-based index of the correct option.`);
   }
@@ -46,10 +67,102 @@ function vTfCore(a, at, e) {
   if (!str(a.statement)) e.push(`${at}: missing "statement".`);
   if (typeof a.answer !== 'boolean') e.push(`${at}: "answer" must be true or false.`);
 }
+// CONTRACTS documents "1–5 gaps" — validator.js is the behavioural source of
+// truth (#59), so both bounds are enforced here (and mirrored in the schema
+// pattern below). More than 5 gaps makes a gap-fill slow to complete; unlike
+// the option-count/survey drifts in #59, more gaps is a real usability
+// problem, not just a documentation mismatch, so this is a hard cap.
+const GAP_FILL_MAX = 5;
 function vGapCore(a, at, e) {
-  if (!str(a.text)) e.push(`${at}: missing "text".`);
-  else if (!hasGap(a.text)) e.push(`${at}: "text" must contain at least one gap written as {{answer}}.`);
+  if (!str(a.text)) { e.push(`${at}: missing "text".`); return; }
+  const gapCount = parseGaps(a.text).filter((s) => s.kind === 'gap').length;
+  if (gapCount < 1) e.push(`${at}: "text" must contain at least one gap written as {{answer}}.`);
+  else if (gapCount > GAP_FILL_MAX) {
+    e.push(`${at}: "text" has ${gapCount} gaps — keep gap-fill activities to at most ${GAP_FILL_MAX} gaps so they stay quick to complete.`);
+  }
 }
+/**
+ * Which of `words` can't be placed in a size×size grid — the IDENTICAL
+ * deterministic greedy placement renderer.js `buildWordSearch` uses (longest
+ * first, first free fit scanning row-major across →/↓/↘, overlaps only where
+ * letters match). Because it matches the renderer exactly, "validator accepts"
+ * guarantees "renderer places every word". Self-contained so the copies of this
+ * file stay dependency-free.
+ */
+function wordSearchUnplaced(words, size) {
+  const grid = Array.from({ length: size }, () => Array(size).fill(''));
+  const dirs = [[0, 1], [1, 0], [1, 1]];
+  const unplaced = [];
+  const fits = (w, row, col, dr, dc) => {
+    if (row + dr * (w.length - 1) >= size || col + dc * (w.length - 1) >= size) return false;
+    for (let i = 0; i < w.length; i++) { const cell = grid[row + dr * i][col + dc * i]; if (cell && cell !== w[i]) return false; }
+    return true;
+  };
+  for (const raw of [...words].sort((x, y) => y.trim().length - x.trim().length)) {
+    const w = raw.trim().toUpperCase();
+    let done = false;
+    for (const [dr, dc] of dirs) {
+      for (let row = 0; row < size && !done; row++) for (let col = 0; col < size && !done; col++) {
+        if (fits(w, row, col, dr, dc)) { for (let i = 0; i < w.length; i++) grid[row + dr * i][col + dc * i] = w[i]; done = true; }
+      }
+      if (done) break;
+    }
+    if (!done) unplaced.push(raw);
+  }
+  return unplaced;
+}
+
+/**
+ * #53: shared reachability + termination check for scenario/lesson graphs.
+ * Two passes, both cycle-safe (BFS/reverse-BFS, no recursion):
+ *  1. forward BFS from `startId` — anything not visited is an orphan the
+ *     player can never reach.
+ *  2. reverse BFS from every terminal node over reversed edges — anything
+ *     reachable from the start that ISN'T in that set can only loop forever
+ *     (a cycle with no exit renders an endless chat/lesson).
+ * @param {string} startId
+ * @param {Map<string, any>} nodesById id -> node/page object
+ * @param {(node: any) => string[]} edgesOf outgoing edge target ids
+ * @param {(node: any) => boolean} isTerminal true for an end/no-exit node
+ * @param {string[]} e error sink
+ * @param {string} at prefix for messages, e.g. "Activity (scenario)"
+ * @param {string} label "node" or "page", for the message text
+ */
+function checkGraphReachability(startId, nodesById, edgesOf, isTerminal, e, at, label) {
+  const ids = [...nodesById.keys()];
+  const reachable = new Set([startId]);
+  const queue = [startId];
+  while (queue.length) {
+    const id = queue.shift();
+    for (const to of edgesOf(nodesById.get(id))) {
+      if (nodesById.has(to) && !reachable.has(to)) { reachable.add(to); queue.push(to); }
+    }
+  }
+  for (const id of ids) {
+    if (!reachable.has(id)) e.push(`${at}: ${label} "${id}" can never be reached from the start.`);
+  }
+
+  const reverse = new Map(ids.map((id) => [id, []]));
+  for (const id of ids) {
+    for (const to of edgesOf(nodesById.get(id))) {
+      if (reverse.has(to)) reverse.get(to).push(id);
+    }
+  }
+  const canEnd = new Set(ids.filter((id) => isTerminal(nodesById.get(id))));
+  const endQueue = [...canEnd];
+  while (endQueue.length) {
+    const id = endQueue.shift();
+    for (const from of reverse.get(id)) {
+      if (!canEnd.has(from)) { canEnd.add(from); endQueue.push(from); }
+    }
+  }
+  for (const id of reachable) {
+    if (!canEnd.has(id)) {
+      e.push(`${at}: ${label} "${id}" can never reach an ending — it's stuck in a loop with no way out.`);
+    }
+  }
+}
+
 function vPairs(a, at, e, min = 2, max = 8) {
   if (!arr(a.pairs, min, max)) { e.push(`${at}: "pairs" must be ${min}–${max} {left, right} objects.`); return; }
   a.pairs.forEach((p, i) => {
@@ -119,6 +232,12 @@ const V = {
     if (!arr(a.forms, 2, 6)) { e.push(`${at} (grammar-forms): "forms" must be 2–6 entries.`); return; }
     a.forms.forEach((f, i) => {
       if (!f || !str(f.label) || !str(f.sentence)) e.push(`${at} (grammar-forms): form ${i + 1} needs "label" and "sentence".`);
+      // #61: renderer.js's sentenceTiles/popTiles pipeline animates the
+      // **bold** span as the changing chunk — a sentence with none renders as
+      // a flat row with a pop animation that fires on zero nodes.
+      else if (!EMPHASIS_RE.test(f.sentence)) {
+        e.push(`${at} (grammar-forms): form ${i + 1} — wrap the changing words in **double asterisks** so they can be highlighted.`);
+      }
     });
   },
   'tense-shift': (a, at, e) => {
@@ -126,8 +245,17 @@ const V = {
     if (!arr(a.tenses, 2, 6)) { e.push(`${at} (tense-shift): "tenses" must be 2–6 entries.`); return; }
     a.tenses.forEach((t, i) => {
       if (!t || !str(t.label) || !str(t.sentence)) e.push(`${at} (tense-shift): tense ${i + 1} needs "label" and "sentence".`);
+      else if (!EMPHASIS_RE.test(t.sentence)) {
+        e.push(`${at} (tense-shift): tense ${i + 1} — wrap the changing words in **double asterisks** so they can be highlighted.`);
+      }
     });
   },
+  // #59: renderer.js's word-transform view never reads step.derived (it only
+  // builds morpheme tiles + the pos badge) — BUT analog.js's word-transform
+  // emitter uses step.derived as the headline word of the printed table
+  // (`| ${s.derived} | ${built} | ${s.pos} |`). Since the analog (print/PDF)
+  // path is a first-class output of every activity type, "derived" stays
+  // required rather than being dropped to match the renderer alone.
   'word-transform': (a, at, e) => {
     if (!str(a.baseWord)) e.push(`${at} (word-transform): missing "baseWord".`);
     if (!arr(a.steps, 2, 8)) { e.push(`${at} (word-transform): "steps" must be 2–8 entries.`); return; }
@@ -165,10 +293,20 @@ const V = {
     if (!arr(a.words, 4, 14)) { e.push(`${at} (word-search): "words" must be 4–14 words.`); return; }
     const size = a.gridSize ?? 12;
     if (a.gridSize != null && (!int(a.gridSize, 6) || a.gridSize > 16)) e.push(`${at} (word-search): "gridSize" must be 6–16.`);
+    const before = e.length;
     a.words.forEach((w, i) => {
       if (!str(w) || !/^[\p{L}]+$/u.test(w.trim())) e.push(`${at} (word-search): word ${i + 1} must be letters only (no spaces or hyphens).`);
       else if (w.trim().length > size) e.push(`${at} (word-search): "${w}" is longer than the grid size (${size}).`);
     });
+    // Only worth checking collective placement once every word is individually
+    // valid — otherwise reject the whole set if they can't all fit the grid
+    // (a per-word length check alone doesn't guarantee the SET fits).
+    if (e.length === before) {
+      const unplaced = wordSearchUnplaced(a.words, size);
+      if (unplaced.length) {
+        e.push(`${at} (word-search): these words don't all fit a ${size}×${size} grid together — use fewer/shorter words or a larger "gridSize": ${unplaced.join(', ')}.`);
+      }
+    }
   },
 
   /* Audio exercises (dictation, listen-mcq) are out of scope until a
@@ -195,6 +333,12 @@ const V = {
       else if (q.subtype === 'true-false') vTfCore(q, qt, e);
       else vGapCore(q, qt, e);
     });
+    // passMark mirrors quiz — the JSON Schema requires a positive integer, and
+    // the renderer's scoreTracker does `correct >= passMark` (a non-number
+    // silently reads as never-passed), so the two must agree.
+    if (a.passMark != null && (!int(a.passMark, 1) || a.passMark > a.questions.length)) {
+      e.push(`${at} (question-set): "passMark" must be between 1 and the number of questions.`);
+    }
   },
   'mark-words': (a, at, e) => {
     if (!str(a.instruction)) e.push(`${at} (mark-words): "instruction" is required (it states the criterion).`);
@@ -225,10 +369,11 @@ const V = {
   },
   'scenario': (a, at, e) => {
     if (!str(a.startNode)) e.push(`${at} (scenario): missing "startNode".`);
-    if (!arr(a.nodes, 2)) { e.push(`${at} (scenario): "nodes" must be an array of 2+ nodes.`); return; }
+    if (!arr(a.nodes, 2, 20)) { e.push(`${at} (scenario): "nodes" must be 2–20 nodes (aim for 5–10).`); return; }
     const ids = new Map(a.nodes.map((n) => [n && n.id, n]));
     if (!ids.has(a.startNode)) e.push(`${at} (scenario): startNode "${a.startNode}" is not a node id.`);
     let endSeen = false;
+    const before = e.length;
     a.nodes.forEach((n, i) => {
       const nt = `${at} (scenario): node ${i + 1}`;
       if (!n || !str(n.id) || !str(n.speaker) || !str(n.text)) { e.push(`${nt} needs "id", "speaker" and "text".`); return; }
@@ -237,16 +382,42 @@ const V = {
       n.choices.forEach((c, j) => {
         if (!c || !str(c.text) || !str(c.nextNode)) e.push(`${nt}: choice ${j + 1} needs "text" and "nextNode".`);
         else if (!ids.has(c.nextNode)) e.push(`${nt}: choice ${j + 1} points to unknown node "${c.nextNode}".`);
+        // #52 (validator half — analog.js half handles the "Best path" claim
+        // itself): isCorrect is optional (plenty of scenarios are open-ended
+        // conversation practice with no single right route), but if present
+        // it must be a real boolean — a truthy string like "true" would
+        // silently be picked up by analog.js's `.find(c => c.isCorrect)`.
+        // Not requiring at least one isCorrect per node is a deliberate
+        // choice: analog.js already degrades gracefully (prints a neutral
+        // "no fully marked correct path" note) when none is marked, so
+        // forcing every author to mark one would reject a lot of previously
+        // valid, intentionally-open scenarios for no behavioural gain.
+        if (c && c.isCorrect != null && typeof c.isCorrect !== 'boolean') {
+          e.push(`${nt}: choice ${j + 1} — "isCorrect" must be true or false (a truthy string like "true" would be silently treated as correct).`);
+        }
       });
     });
     if (!endSeen) e.push(`${at} (scenario): at least one node must have "isEnd": true.`);
+    // #53: only run the graph walk once every node/choice is individually
+    // well-formed (id/nextNode references etc.) — otherwise a single bad
+    // reference would drown in "can never be reached" noise for nodes whose
+    // real problem is a missing field.
+    if (e.length === before && endSeen && ids.has(a.startNode)) {
+      checkGraphReachability(
+        a.startNode, ids,
+        (n) => (n.isEnd ? [] : (n.choices || []).map((c) => c.nextNode)),
+        (n) => !!n.isEnd,
+        e, `${at} (scenario)`, 'node',
+      );
+    }
   },
   'lesson': (a, at, e) => {
     if (!str(a.startPage)) e.push(`${at} (lesson): missing "startPage".`);
-    if (!arr(a.pages, 2)) { e.push(`${at} (lesson): "pages" must be an array of 2+ pages.`); return; }
-    const ids = new Set(a.pages.map((p) => p && p.id));
+    if (!arr(a.pages, 2, 20)) { e.push(`${at} (lesson): "pages" must be 2–20 pages (aim for 4–8).`); return; }
+    const ids = new Map(a.pages.map((p) => [p && p.id, p]));
     if (!ids.has(a.startPage)) e.push(`${at} (lesson): startPage "${a.startPage}" is not a page id.`);
     const ref = (id, where) => { if (id != null && !ids.has(id)) e.push(`${where} points to unknown page "${id}".`); };
+    const before = e.length;
     a.pages.forEach((p, i) => {
       const pt = `${at} (lesson): page ${i + 1}`;
       if (!p || !str(p.id)) { e.push(`${pt} needs an "id".`); return; }
@@ -259,6 +430,19 @@ const V = {
         ref(p.onWrong ?? null, `${pt} ("${p.id}") onWrong`);
       } else e.push(`${pt} needs pageType "content" or "question".`);
     });
+    // #53: a page is terminal (an "end") when it has no outgoing edge — a
+    // content page with nextPage: null, or a question page whose onCorrect
+    // AND onWrong are both null. Only run the graph walk once every page is
+    // individually well-formed, same reasoning as scenario above.
+    if (e.length === before && ids.has(a.startPage)) {
+      const edgesOf = (p) => (p.pageType === 'content'
+        ? (p.nextPage != null ? [p.nextPage] : [])
+        : [p.onCorrect, p.onWrong].filter((x) => x != null));
+      checkGraphReachability(
+        a.startPage, ids, edgesOf, (p) => edgesOf(p).length === 0,
+        e, `${at} (lesson)`, 'page',
+      );
+    }
   },
   'crossword': (a, at, e) => {
     const across = a.clues && Array.isArray(a.clues.across) ? a.clues.across : null;
@@ -271,6 +455,16 @@ const V = {
     const place = (c, dir) => {
       if (!c || !str(c.clue) || !str(c.answer) || !int(c.row, 0) || !int(c.col, 0) || !int(c.number, 1)) {
         e.push(`${at} (crossword): every clue needs number, clue, answer, row, col.`);
+        return;
+      }
+      // Bound the grid: row/col drive an O(maxR*maxC) DOM/Markdown grid build in
+      // the renderer and analog emitter, so an unbounded value can freeze the tab.
+      if (c.row > CROSSWORD_MAX_COORD || c.col > CROSSWORD_MAX_COORD) {
+        e.push(`${at} (crossword): row/col must be between 0 and ${CROSSWORD_MAX_COORD}.`);
+        return;
+      }
+      if (c.answer.length > CROSSWORD_MAX_ANSWER) {
+        e.push(`${at} (crossword): answer "${c.answer}" is too long (max ${CROSSWORD_MAX_ANSWER} letters).`);
         return;
       }
       if (!/^[\p{L}]+$/u.test(c.answer)) { e.push(`${at} (crossword): answer "${c.answer}" must be letters only.`); return; }
