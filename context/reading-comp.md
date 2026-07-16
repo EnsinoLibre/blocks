@@ -7,7 +7,7 @@ analog-strategy: direct
 
 # Reading comprehension — `reading-comp`
 
-A passage followed by mixed questions — the workhorse of text-based worksheets. Questions reuse the core shapes (`mcq`, `true-false`, `gap-fill`, `matching`) and **each must carry its `type` field** (a question without one renders blank). Order questions by where their evidence appears in the passage.
+A passage followed by mixed questions — the workhorse of text-based worksheets. Questions reuse the core shapes (`mcq`, `true-false`, `gap-fill`, `matching`) and **each must carry its `type` field** (a question without one renders an inline error card; the rest of the worksheet still renders). Order questions by where their evidence appears in the passage.
 
 | Field | Type | Required |
 |-------|------|----------|

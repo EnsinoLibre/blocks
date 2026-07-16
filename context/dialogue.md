@@ -7,7 +7,7 @@ analog-strategy: transform
 
 # Dialogue — `dialogue`
 
-A two-speaker model conversation shown as chat bubbles, with optional glosses and built-in read-aloud (browser speech, no audio files). Model the language before productive practice.
+A two-speaker model conversation shown as chat bubbles, with optional glosses (read-aloud is disabled until a high-quality browser TTS lands — EnsinoLibre/core#2). Model the language before productive practice.
 
 | Field | Type | Required |
 |-------|------|----------|

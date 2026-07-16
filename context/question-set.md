@@ -7,7 +7,7 @@ analog-strategy: direct
 
 # Mixed question set — `question-set`
 
-One scored set mixing `mcq`, `true-false` and `gap-fill` items. **Every item must carry its `subtype`** — an item without one renders blank. Alternate the subtypes rather than blocking them.
+One scored set mixing `mcq`, `true-false` and `gap-fill` items. **Every item must carry its `subtype`** — an item without one renders an inline "could not be displayed" error card (the rest of the worksheet still renders). Alternate the subtypes rather than blocking them.
 
 | Field | Type | Required |
 |-------|------|----------|

@@ -7,7 +7,7 @@ analog-strategy: transform
 
 # Flashcards — `flashdeck`
 
-A flip-card vocabulary deck: target word on the front, meaning on the back, with optional pronunciation, example and emoji. Built-in read-aloud speaks the **word only**.
+A flip-card vocabulary deck: target word on the front, meaning on the back, with optional pronunciation, example and emoji. Read-aloud is disabled until a high-quality browser TTS lands (EnsinoLibre/core#2).
 
 | Field | Type | Required |
 |-------|------|----------|

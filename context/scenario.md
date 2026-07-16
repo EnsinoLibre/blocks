@@ -7,7 +7,7 @@ analog-strategy: transform
 
 # Branching scenario — `scenario`
 
-A conversation simulation: the interlocutor speaks, the learner picks a reply, and choices steer the exchange. Wrong choices should lead somewhere *instructive*, not a dead end. Every path must reach a node with `isEnd: true` (the validator walks the graph). Speakers are roles, never real names.
+A conversation simulation: the interlocutor speaks, the learner picks a reply, and choices steer the exchange. Wrong choices should lead somewhere *instructive*, not a dead end. Every path must reach a node with `isEnd: true` and every node must be reachable from `startNode` (the validator walks the graph). Mark the best reply at each decision with `isCorrect: true` — it drives both the printed answer key's "Best path" and the digital end-of-scenario "You took the best path!" note (omit it everywhere for open-ended scenarios). Speakers are roles, never real names.
 
 | Field | Type | Required |
 |-------|------|----------|
