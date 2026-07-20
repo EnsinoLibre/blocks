@@ -7,7 +7,9 @@ analog-strategy: transform
 
 # Dialogue — `dialogue`
 
-A two-speaker model conversation shown as chat bubbles, with optional glosses (read-aloud is disabled until a high-quality browser TTS lands — EnsinoLibre/core#2). Model the language before productive practice.
+A two-speaker model conversation shown as chat bubbles, with optional glosses and capability-gated read-aloud. Model the language before productive practice.
+
+**Read-aloud:** the 🔊 button uses the browser's own speech engine (nothing vendored, no audio files). The renderer picks the best voice installed for the worksheet's `language` and hides the button when the device has no voice for it — so a dead button is never shown. Treat it as an enhancement; the activity is complete without it. See EnsinoLibre/core#2.
 
 | Field | Type | Required |
 |-------|------|----------|

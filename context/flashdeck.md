@@ -7,7 +7,9 @@ analog-strategy: transform
 
 # Flashcards — `flashdeck`
 
-A flip-card vocabulary deck: target word on the front, meaning on the back, with optional pronunciation, example and emoji. Read-aloud is disabled until a high-quality browser TTS lands (EnsinoLibre/core#2).
+A flip-card vocabulary deck: target word on the front, meaning on the back, with optional pronunciation, example and emoji. Capability-gated read-aloud speaks the **word only**.
+
+**Read-aloud:** the 🔊 button uses the browser's own speech engine (nothing vendored). The renderer picks the best voice installed for the worksheet's `language` and hides the button when the device has none — never a button that does nothing. See EnsinoLibre/core#2.
 
 | Field | Type | Required |
 |-------|------|----------|
